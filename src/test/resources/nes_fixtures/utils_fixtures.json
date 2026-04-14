@@ -1,0 +1,183 @@
+{
+  "extract_diff_parts_no_context": {
+    "input": {
+      "hunk": "@@ -28,7 +28,7 @@\n transformed = {\n     \"id\": item[\"id\"],\n-    \"score\": round(item.get(\"score\", 0) * 100, 2),\n+    \"value\": round(item.get(\"score\", 0) * 100, 2),\n }",
+      "num_context_lines": 0
+    },
+    "output": [
+      "    \"score\": round(item.get(\"score\", 0) * 100, 2),\n",
+      "    \"value\": round(item.get(\"score\", 0) * 100, 2),\n"
+    ]
+  },
+  "extract_diff_parts_one_context": {
+    "input": {
+      "hunk": "@@ -28,7 +28,7 @@\n transformed = {\n     \"id\": item[\"id\"],\n-    \"score\": round(item.get(\"score\", 0) * 100, 2),\n+    \"value\": round(item.get(\"score\", 0) * 100, 2),\n }",
+      "num_context_lines": 1
+    },
+    "output": [
+      "    \"id\": item[\"id\"],\n    \"score\": round(item.get(\"score\", 0) * 100, 2),\n}",
+      "    \"id\": item[\"id\"],\n    \"value\": round(item.get(\"score\", 0) * 100, 2),\n}"
+    ]
+  },
+  "extract_diff_parts_all": {
+    "input": {
+      "hunk": "@@ -28,7 +28,7 @@\n transformed = {\n     \"id\": item[\"id\"],\n-    \"score\": round(item.get(\"score\", 0) * 100, 2),\n+    \"value\": round(item.get(\"score\", 0) * 100, 2),\n }",
+      "num_context_lines": -1
+    },
+    "output": [
+      "transformed = {\n    \"id\": item[\"id\"],\n    \"score\": round(item.get(\"score\", 0) * 100, 2),\n}",
+      "transformed = {\n    \"id\": item[\"id\"],\n    \"value\": round(item.get(\"score\", 0) * 100, 2),\n}"
+    ]
+  },
+  "split_into_hunks": {
+    "input": "File: src/main.py\n@@ -1,3 +1,3 @@\n-old\n+new\nFile: src/utils.py\n@@ -5,2 +5,2 @@\n-foo\n+bar",
+    "output": [
+      "File: src/main.py\n@@ -1,3 +1,3 @@\n-old\n+new",
+      "File: src/utils.py\n@@ -5,2 +5,2 @@\n-foo\n+bar"
+    ]
+  },
+  "get_line_number_from_position": {
+    "input": {
+      "text": "line0\nline1\nline2\nline3"
+    },
+    "outputs": {
+      "pos_0": 0,
+      "pos_6": 1,
+      "pos_12": 2,
+      "pos_end": 3,
+      "pos_negative": 0
+    }
+  },
+  "strip_leading_empty_newlines": {
+    "input": "\n\n\nhello\nworld",
+    "output": "hello\nworld"
+  },
+  "filter_whitespace_only_hunks": {
+    "input": [
+      "File: a.py\n@@ -1,1 +1,1 @@\n- foo\n+ foo",
+      "File: b.py\n@@ -1,1 +1,1 @@\n-old\n+new"
+    ],
+    "output": [
+      "File: b.py\n@@ -1,1 +1,1 @@\n-old\n+new"
+    ]
+  },
+  "split_into_diff_hunks": {
+    "input": {
+      "input_content": "line1\nline2\nline3\nline4\n",
+      "output_content": "line1\nchanged2\nline3\nnew_line4\nextra_line\n"
+    },
+    "output": [
+      {
+        "input_start": 2,
+        "input_lines": [
+          "line2\n"
+        ],
+        "output_start": 2,
+        "output_lines": [
+          "changed2\n"
+        ]
+      },
+      {
+        "input_start": 4,
+        "input_lines": [
+          "line4\n"
+        ],
+        "output_start": 4,
+        "output_lines": [
+          "new_line4\n",
+          "extra_line\n"
+        ]
+      }
+    ]
+  },
+  "is_large_diff_above_cursor": {
+    "large_diff": true,
+    "small_diff": false,
+    "same": false
+  },
+  "truncate_long_lines": {
+    "input": "short\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nshort2",
+    "output": "short\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...\nshort2"
+  },
+  "should_disable_for_code_block": {
+    "short_lines": false,
+    "long_line": true
+  },
+  "is_equal_ignoring_newlines": {
+    "equal": true,
+    "not_equal": false
+  },
+  "pretokenize": {
+    "input": "def hello_world(x: int) -> str:\n    return f'Hello {x}'",
+    "output": [
+      "def",
+      " hello",
+      "_world",
+      "(x",
+      ":",
+      " int",
+      ")",
+      " ->",
+      " str",
+      ":\n",
+      "   ",
+      " return",
+      " f",
+      "'Hello",
+      " {",
+      "x",
+      "}'"
+    ]
+  },
+  "get_lines_around_cursor_small": {
+    "input": {
+      "text": "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20\nline21\nline22\nline23\nline24\nline25\nline26\nline27\nline28\nline29\nline30\nline31\nline32\nline33\nline34\nline35\nline36\nline37\nline38\nline39\nline40\nline41\nline42\nline43\nline44\nline45\nline46\nline47\nline48\nline49",
+      "cursor_position": 30
+    },
+    "output": "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20\nline21\nline22\nline23\nline24\nline25\nline26\nline27\nline28\nline29\nline30\nline31\nline32\nline33\nline34\nline35\nline36\nline37\nline38\nline39\nline40\nline41\nline42\nline43\nline44\nline45\nline46\nline47\nline48\nline49"
+  },
+  "get_block_at_cursor": {
+    "input": {
+      "file_contents": "import json\n\ndef process(items):\n    results = []\n    for item in items:\n        transformed = {\"id\": item[\"id\"], \"name\": item[\"name\"]}\n        results.append(transformed)\n    return results\n\ndef main():\n    data = json.load(open(\"data.json\"))\n    print(process(data))\n",
+      "cursor_position": 158
+    },
+    "output": {
+      "code_block": "    for item in items:\n        transformed = {\"id\": item[\"id\"], \"name\": item[\"name\"]}\n        results.append(transformed)\n    return results\n\ndef main():\n    data = json.load(open(\"data.json\"))\n    print(process(data))\n",
+      "prefix": "import json\n\ndef process(items):\n    results = []",
+      "suffix": "",
+      "block_start_index": 50
+    }
+  },
+  "pack_items_for_prompt": {
+    "input": {
+      "items": [
+        "short",
+        "medium length text",
+        "a very long string that takes up space"
+      ],
+      "token_limit": 10
+    },
+    "output": [
+      "short",
+      "medium length text"
+    ]
+  },
+  "parse_hunk": {
+    "input": "@@ -10,3 +10,4 @@\n \n context line\n-old line\n+new line1\n+new line2\n context after\n",
+    "output": {
+      "input_start": 10,
+      "input_lines": [
+        "context line\n",
+        "old line\n",
+        "context after\n"
+      ],
+      "output_start": 10,
+      "output_lines": [
+        "context line\n",
+        "new line1\n",
+        "new line2\n",
+        "context after\n"
+      ]
+    }
+  }
+}

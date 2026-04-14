@@ -1,0 +1,77 @@
+{
+  "ghost_text_with_location": {
+    "input": {
+      "completion": "def hello():\n    print('hi')\n    print('bye')\n    return True\n",
+      "code_block": "def hello():\n    print('hi')\n    return True\n",
+      "cursor_pos": 29
+    },
+    "output": "    print('bye')\n"
+  },
+  "find_ghost_text_non_local": {
+    "input": {
+      "completion": "def hello():\n    print('hi')\n    print('bye')\n    return True\n",
+      "code_block": "def hello():\n    print('hi')\n    return True\n",
+      "cursor_pos": 29
+    },
+    "output": [
+      "print('bye')\n    ",
+      33
+    ]
+  },
+  "single_line_ghost_text": {
+    "input": {
+      "completion": "x = 1\ny = 2\nz = 3\n",
+      "code_block": "x = 1\ny = \nz = 3\n",
+      "cursor_pos": 10
+    },
+    "output": "2"
+  },
+  "single_line_ghost_text_empty": {
+    "input": {
+      "completion": "totally different",
+      "code_block": "x = 1\ny = \nz = 3\n",
+      "cursor_pos": 10
+    },
+    "output": ""
+  },
+  "is_pure_insertion_above_cursor_true": {
+    "input": {
+      "code_block": "line1\nline2\nline3\n",
+      "completion": "line1\nnew_line\nline2\nline3\n",
+      "cursor_pos": 12
+    },
+    "output": true
+  },
+  "select_best_hunk_simple_change": {
+    "input": {
+      "completion": "    x = 10\n    y = 2\n    z = x + y\n    return z\n",
+      "cleaned_code_block": "    x = 1\n    y = 2\n    z = x + y\n    return z\n",
+      "file_contents": "import os\n\ndef process():\n    x = 1\n    y = 2\n    z = x + y\n    return z\n",
+      "cursor_position": 35,
+      "autocomplete_id": "test-id"
+    },
+    "output": [
+      {
+        "start_index": 35,
+        "end_index": 35,
+        "completion": "0",
+        "confidence": 1.0,
+        "autocomplete_id": "test-id-0"
+      }
+    ]
+  },
+  "apply_completions_to_code_block": {
+    "input": {
+      "file_contents": "import os\n\ndef process():\n    x = 1\n    y = 2\n    z = x + y\n    return z\n",
+      "cleaned_code_block": "    x = 1\n    y = 2\n    z = x + y\n    return z\n",
+      "completions": [
+        {
+          "start_index": 26,
+          "end_index": 35,
+          "completion": "    x = 10"
+        }
+      ]
+    },
+    "output": "    x = 10\n    y = 2\n    z = x + y\n    return z\n"
+  }
+}

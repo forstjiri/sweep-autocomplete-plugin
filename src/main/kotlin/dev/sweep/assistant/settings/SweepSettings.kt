@@ -95,6 +95,18 @@ class SweepSettings : PersistentStateComponent<SweepSettings> {
 
     var autocompleteModel: String = MODEL_05B
 
+    /**
+     * Use the native engine: build NES prompts in-process and call llama-server
+     * directly. Falls back to the bundled Python server when llama-server is
+     * not found on PATH.
+     */
+    var autocompleteLocalNativeEngine: Boolean = true
+
+    /**
+     * Model id used by the native engine (see NesModelConfig).
+     */
+    var autocompleteLocalModel: String = "sweep-0.5B"
+
     var customModelRepo: String = ""
 
     var customModelFilename: String = ""

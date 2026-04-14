@@ -151,8 +151,12 @@ data class NextEditAutocompleteResponse(
     val elapsed_time_ms: Long? = null,
     // this is the new completion
     var completions: List<NextEditAutocompletion>,
+    // When true, indices are already JVM-native (from native Kotlin engine) — skip Python→JVM conversion
+    @kotlinx.serialization.Transient
+    var nativeIndices: Boolean = false,
 ) {
     fun adjustIndices(text: String) {
+        if (nativeIndices) return  // indices already in JVM string space
         completions.forEach { it.adjustIndices(text) }
     }
 

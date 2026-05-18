@@ -24,7 +24,7 @@ class DiffHunkMergeTest {
 
             // then
             merged.size shouldBe 1
-            merged[0].additions shouldBe "hello world\n" // diff algorithm adds trailing newline
+            merged[0].additions shouldBe "hello world"
             merged[0].deletions shouldBe ""
             merged[0].index shouldBe 0
         }

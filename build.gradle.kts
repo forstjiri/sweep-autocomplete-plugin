@@ -4,13 +4,11 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.models.ProductRelease
 
 plugins {
-    application
     id("java")
     id("org.jetbrains.intellij.platform") version "2.2.0"
     kotlin("jvm") version "2.1.0"
     id("com.google.protobuf") version "0.9.4"
     kotlin("plugin.serialization") version "1.9.20"
-    id("com.github.johnrengelman.shadow") version "8.1.1"
 }
 
 val remoteRobotVersion = "0.11.20"
@@ -41,7 +39,7 @@ intellijPlatform {
                 types.set(listOf(IntelliJPlatformType.WebStorm))
                 channels.set(listOf(ProductRelease.Channel.RELEASE))
                 sinceBuild.set("242")
-                untilBuild.set("243.*")
+                untilBuild.set("262.*")
             }
 //            select {
 //                types.set(listOf(IntelliJPlatformType.DataGrip))
@@ -67,26 +65,26 @@ intellijPlatform {
                 )
                 channels.set(listOf(ProductRelease.Channel.RELEASE))
                 sinceBuild.set("241")
-                untilBuild.set("253.*")
+                untilBuild.set("262.*")
             }
         }
     }
 }
 
 tasks {
-    // Need JDK 17 for Intellij 2024.1.7
+    // JDK 21 for IntelliJ Platform 2025.1+
 
     withType<JavaCompile> {
-        sourceCompatibility = "17"
-        targetCompatibility = "17"
+        sourceCompatibility = "21"
+        targetCompatibility = "21"
     }
     withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-        kotlinOptions.jvmTarget = "17"
+        kotlinOptions.jvmTarget = "21"
     }
 
     patchPluginXml {
         sinceBuild.set("241")
-        untilBuild.set("253.*")
+        untilBuild.set("262.*")
     }
 
     signPlugin {
@@ -191,6 +189,10 @@ tasks {
         useJUnitPlatform()
         systemProperty("idea.force.use.core.classloader", "true")
         systemProperty("idea.use.core.classloader.for.plugin.path", "true")
+        // e2e tests require a running IDE plus the Remote Robot server on
+        // 127.0.0.1:8082. They are run via the dedicated `e2e` task; keep them
+        // out of the default test run.
+        exclude("dev/sweep/assistant/e2e/**")
     }
 
     verifyPlugin {}

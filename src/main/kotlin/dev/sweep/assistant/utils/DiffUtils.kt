@@ -205,6 +205,9 @@ fun computeDiffGroups(
     if (newContent.isEmpty() && oldContent.isNotEmpty()) {
         return listOf(DiffGroup(deletions = oldContent, additions = "", index = 0))
     }
+    if (oldContent.isEmpty() && newContent.isNotEmpty()) {
+        return listOf(DiffGroup(deletions = "", additions = newContent, index = 0))
+    }
 
     val oldLines = oldContent.lines()
     val newLines = newContent.lines()

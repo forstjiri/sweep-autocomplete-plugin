@@ -12,24 +12,29 @@ import kotlin.io.path.exists
 import kotlin.io.path.isExecutable
 
 class RipgrepManagerTest {
-    @Test
-    fun `test OS and architecture detection for macOS ARM64`() {
-        // Create a mock instance to test the detection logic
-        val manager = RipgrepManager()
-
-        // Test detection on the actual system
+    private fun isSupportedPlatform(): Boolean {
         val osName = System.getProperty("os.name", "").lowercase()
         val osArch = System.getProperty("os.arch", "").lowercase()
+        val arm64 = osArch == "aarch64" || osArch == "arm64"
+        val x86_64 = osArch == "x86_64" || osArch == "amd64"
+        return when {
+            osName.contains("mac") && (arm64 || x86_64) -> true
+            osName.contains("linux") && (arm64 || x86_64) -> true
+            osName.contains("windows") && x86_64 -> true
+            else -> false
+        }
+    }
 
-        // This test will pass on macOS ARM64, and verify null on other platforms
+    @Test
+    fun `test OS and architecture detection on supported and unsupported platforms`() {
+        val manager = RipgrepManager()
         val ripgrepPath = manager.getRipgrepPath()
 
-        if (osName.contains("mac") && (osArch == "aarch64" || osArch == "arm64")) {
+        if (isSupportedPlatform()) {
             ripgrepPath.shouldNotBeNull()
             ripgrepPath.exists() shouldBe true
             ripgrepPath.isExecutable() shouldBe true
         } else {
-            // On unsupported platforms, should return null
             ripgrepPath.shouldBeNull()
         }
     }
@@ -40,11 +45,7 @@ class RipgrepManagerTest {
         // but we can test that the method handles unsupported platforms gracefully
         val manager = RipgrepManager()
 
-        val osName = System.getProperty("os.name", "").lowercase()
-        val osArch = System.getProperty("os.arch", "").lowercase()
-
-        // If we're not on macOS ARM64, it should return null
-        if (!(osName.contains("mac") && (osArch == "aarch64" || osArch == "arm64"))) {
+        if (!isSupportedPlatform()) {
             val path = manager.getRipgrepPath()
             path.shouldBeNull()
         }
@@ -91,11 +92,7 @@ class RipgrepManagerTest {
     fun `test isRipgrepAvailable returns false on unsupported platform`() {
         val manager = RipgrepManager()
 
-        val osName = System.getProperty("os.name", "").lowercase()
-        val osArch = System.getProperty("os.arch", "").lowercase()
-
-        // If we're not on macOS ARM64, it should not be available
-        if (!(osName.contains("mac") && (osArch == "aarch64" || osArch == "arm64"))) {
+        if (!isSupportedPlatform()) {
             val available = manager.isRipgrepAvailable()
             available shouldBe false
         }

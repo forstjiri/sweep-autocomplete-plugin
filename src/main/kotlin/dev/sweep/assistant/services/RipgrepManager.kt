@@ -39,8 +39,10 @@ class RipgrepManager : Disposable {
     private val availabilityLock = Any()
 
     init {
-        // Initialize ripgrep availability check on startup in background thread
-        ApplicationManager.getApplication().executeOnPooledThread {
+        // Initialize ripgrep availability check on startup in background thread.
+        // ApplicationManager.getApplication() can be null in unit tests where
+        // the IntelliJ platform isn't bootstrapped — skip the async check in that case.
+        ApplicationManager.getApplication()?.executeOnPooledThread {
             try {
                 checkRipgrepAvailability()
             } catch (e: Exception) {

@@ -14,11 +14,8 @@ import kotlinx.coroutines.*
 import org.jetbrains.plugins.terminal.TerminalToolWindowFactory
 import org.jetbrains.plugins.terminal.TerminalToolWindowManager
 import java.io.File
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
-import java.time.Duration
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.util.concurrent.TimeUnit
 
 @Service(Service.Level.APP)
@@ -44,13 +41,6 @@ class LocalAutocompleteServerManager : Disposable {
 
     @Volatile
     private var isStarting = false
-
-    private val httpClient =
-        HttpClient
-            .newBuilder()
-            .version(HttpClient.Version.HTTP_1_1)
-            .connectTimeout(Duration.ofMillis(HEALTH_CHECK_TIMEOUT_MS))
-            .build()
 
     private fun getPort(): Int =
         try {
@@ -79,16 +69,13 @@ class LocalAutocompleteServerManager : Disposable {
     }
 
     fun isServerHealthy(): Boolean =
+        // TCP-level probe: just check that something is accepting connections on the port.
+        // Avoids the HTTP `GET / 404` line the FastAPI server logs for every probe.
         try {
-            val request =
-                HttpRequest
-                    .newBuilder()
-                    .uri(URI.create(getServerUrl()))
-                    .timeout(Duration.ofMillis(HEALTH_CHECK_TIMEOUT_MS))
-                    .GET()
-                    .build()
-            val response = httpClient.send(request, HttpResponse.BodyHandlers.discarding())
-            response.statusCode() in 200..499
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress("127.0.0.1", getPort()), HEALTH_CHECK_TIMEOUT_MS.toInt())
+                true
+            }
         } catch (e: Exception) {
             false
         }

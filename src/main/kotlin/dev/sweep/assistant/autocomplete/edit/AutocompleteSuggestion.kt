@@ -14,7 +14,6 @@ import dev.sweep.assistant.theme.SweepColors
 import dev.sweep.assistant.theme.withAlpha
 import dev.sweep.assistant.utils.computeDiffGroups
 import dev.sweep.assistant.utils.isAllAdditions
-import dev.sweep.assistant.views.PopupEditorComponent
 import java.awt.Component
 import java.awt.Font
 import kotlin.math.abs

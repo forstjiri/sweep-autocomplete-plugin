@@ -5,20 +5,10 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
-import com.intellij.openapi.diagnostic.IdeaLoggingEvent
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.util.concurrency.annotations.RequiresBackgroundThread
-import dev.sweep.assistant.settings.SweepSettings
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
-import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
-import javax.swing.JPanel
 
 /**
  * Service that handles deduplication of notifications to prevent spam.
@@ -39,30 +29,7 @@ class NotificationDeduplicationService(
          * Returns true if backend is reachable, false if there are network/connectivity issues.
          */
         @RequiresBackgroundThread
-        private fun isBackendHealthy(): Boolean =
-            try {
-                runBlocking {
-                    withTimeoutOrNull(2000) {
-                        val baseUrl = SweepSettings.getInstance().baseUrl
-                        val httpClient =
-                            HttpClient
-                                .newBuilder()
-                                .connectTimeout(Duration.ofSeconds(3))
-                                .build()
-                        val request =
-                            HttpRequest
-                                .newBuilder()
-                                .uri(URI.create(baseUrl))
-                                .timeout(Duration.ofSeconds(3))
-                                .GET()
-                                .build()
-                        val response = httpClient.send(request, HttpResponse.BodyHandlers.discarding())
-                        response.statusCode() in 200..299
-                    } ?: false
-                }
-            } catch (e: Exception) {
-                false
-            }
+        private fun isBackendHealthy(): Boolean = true // Cloud backend removed; always treat as "reachable"
 
         /**
          * Creates user-friendly error messages for common HTTP and other errors.
@@ -262,25 +229,10 @@ class NotificationDeduplicationService(
             println("Failing silently for error: ${exception.message}")
         }
 
-        // Always send error report to backend (regardless of user notification)
-        try {
-            val loggingEvent =
-                IdeaLoggingEvent(
-                    "$title: ${exception.message}",
-                    exception,
-                )
-            SweepErrorReportingService.getInstance().sendErrorReport(
-                events = arrayOf(loggingEvent),
-                additionalInfo = "Automatic error report: $errorContext\nUser-friendly title: $userFriendlyTitle\nUser-friendly content: $userFriendlyContent",
-                parentComponent = JPanel(),
-                pluginDescriptor = null,
-                showUserNotification = false,
-            )
-        } catch (reportingError: Exception) {
-            Logger
-                .getInstance(NotificationDeduplicationService::class.java)
-                .warn("Failed to send error report: ${reportingError.message}")
-        }
+        // Cloud error reporting removed; log locally and continue.
+        Logger
+            .getInstance(NotificationDeduplicationService::class.java)
+            .warn("$title: ${exception.message} (context: $errorContext)", exception)
     }
 
     /**

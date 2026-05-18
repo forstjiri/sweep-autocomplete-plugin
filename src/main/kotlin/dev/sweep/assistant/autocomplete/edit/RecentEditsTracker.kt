@@ -32,9 +32,13 @@ import com.intellij.util.concurrency.annotations.RequiresBackgroundThread
 import com.intellij.util.concurrency.annotations.RequiresBlockingContext
 import com.intellij.util.concurrency.annotations.RequiresReadLockAbsence
 import dev.sweep.assistant.autocomplete.Debouncer
-import dev.sweep.assistant.components.SweepConfig
-import dev.sweep.assistant.services.*
+import dev.sweep.assistant.services.AutocompleteIpResolverService
+import dev.sweep.assistant.services.AutocompleteSnoozeService
 import dev.sweep.assistant.services.FeatureFlagService
+import dev.sweep.assistant.services.IdeaVimIntegrationService
+import dev.sweep.assistant.services.LocalAutocompleteServerManager
+import dev.sweep.assistant.services.NotificationDeduplicationService
+import dev.sweep.assistant.services.SweepProjectService
 import dev.sweep.assistant.settings.SweepMetaData
 import dev.sweep.assistant.settings.SweepSettings
 import dev.sweep.assistant.utils.*
@@ -381,7 +385,7 @@ class RecentEditsTracker(
     private val recentCursorPositions = EvictingQueue<CursorPositionRecord>(MAX_CURSOR_POSITIONS_TRACKED)
     private val recentUserActions = EvictingQueue<UserAction>(MAX_RECENT_USER_ACTIONS)
     private val debouncer =
-        Debouncer({ SweepConfig.getInstance(project).getDebounceThresholdMs() }, scope, project) { processLatestEdit() }
+        Debouncer({ SweepSettings.getInstance().getDebounceThresholdMs() }, scope, project) { processLatestEdit() }
     private var lastDocumentText: String? = null
     private var originalDocumentText: String = ""
 
@@ -627,12 +631,8 @@ class RecentEditsTracker(
         }
     }
 
-    private fun getClipboardEntry() =
-        ClipboardTrackingService.getInstance(project).getCurrentClipboardEntry()?.takeIf {
-            it.timestamp >
-                lastAcceptedTime &&
-                it.getDuration() < 1000 * 30
-        }
+    // ClipboardTrackingService was a chat feature; no recent paste tracking in autocomplete-only mode.
+    private fun getClipboardEntry(): Any? = null
 
     private fun setupEditorFactoryListener() {
         editorFactoryListener =
@@ -745,11 +745,7 @@ class RecentEditsTracker(
         val currentTime = System.currentTimeMillis()
         val isRecentFileSwitch = currentTime - lastEditTime < FILE_SWITCH_MOVEMENT_THRESHOLD
         val isTutorialFile = getVirtualFileFromEditor(newEditor)?.name?.endsWith("tutorial.py") == true
-        if ((isRecentFileSwitch || isTutorialFile) &&
-            !AgentChangeTrackingService
-                .getInstance(project)
-                .wasLastChangeByAgent(lastEditTime)
-        ) {
+        if (isRecentFileSwitch || isTutorialFile) {
             scheduleAutocompleteWithPrefetch()
         }
     }
@@ -909,11 +905,7 @@ class RecentEditsTracker(
 
                         lastDocumentText = newText
 
-                        // Don't schedule autocomplete if the last change was made by the agent
-                        val lastEditTime = recentEdits.lastOrNull()?.timestamp ?: 0
-                        if (!AgentChangeTrackingService.getInstance(project).wasLastChangeByAgent(lastEditTime)) {
-                            scheduleAutocompleteWithPrefetch()
-                        }
+                        scheduleAutocompleteWithPrefetch()
                     }
                 }
             }.also {
@@ -1080,9 +1072,7 @@ class RecentEditsTracker(
                 val cursorTrackingOrTutorialActive =
                     currentTime - lastEditTime < cursorMovementThreshold ||
                         getVirtualFileFromEditor(editor)?.name?.endsWith("tutorial.py") == true
-                if (cursorTrackingOrTutorialActive &&
-                    !AgentChangeTrackingService.getInstance(project).wasLastChangeByAgent(lastEditTime)
-                ) {
+                if (cursorTrackingOrTutorialActive) {
                     scheduleAutocompleteWithPrefetch()
                 }
             }.also {
@@ -1216,9 +1206,8 @@ class RecentEditsTracker(
             }
         }
 
-        scope.launch {
-            clientIp = getPublicIPAddress()
-        }
+        // Public IP is no longer reported (chat-era telemetry); keep clientIp null.
+        clientIp = null
     }
 
     /**
@@ -1794,32 +1783,9 @@ class RecentEditsTracker(
         return fileChunks.sortedBy { it.timestamp }.takeLast(MAX_CHUNKS_TO_SEND)
     }
 
-    private fun isAppliedCodeBlockActive(): Boolean {
-        val promptBarService = PromptBarService.getInstance(project)
-        val cmdKActive = promptBarService.isPromptBarActive() || promptBarService.areActionsVisible()
-
-        if (FeatureFlagService.getInstance(project).isFeatureEnabled("enable_autocomplete_when_code_blocks_present")) {
-            // new way: only disable this while code blocks are actively being applied
-            val isApplyingBlocks = AppliedCodeBlockManager.getInstance(project).isApplyingCodeBlocksToCurrentFile()
-            return cmdKActive || isApplyingBlocks
-        } else {
-            // old way: check for applied code blocks only in the current file
-            val currentEditor = getCurrentEditor()
-            val hasAppliedBlocksInCurrentFile =
-                if (currentEditor != null) {
-                    val currentFilePath = getVirtualFileFromEditor(currentEditor)?.path
-                    if (currentFilePath != null) {
-                        val relativePath = relativePath(project, currentFilePath) ?: currentFilePath
-                        AppliedCodeBlockManager.getInstance(project).hasBlocksForFile(relativePath)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            return hasAppliedBlocksInCurrentFile || cmdKActive
-        }
-    }
+    // Chat-side prompt bar / applied code block tracking removed; autocomplete is always
+    // allowed to run as long as the rest of the gating conditions pass.
+    private fun isAppliedCodeBlockActive(): Boolean = false
 
     private fun hasMultiLineSelection(): Boolean {
         val editor = getCurrentEditor() ?: return false
@@ -1844,7 +1810,7 @@ class RecentEditsTracker(
      * Check if the given file path matches any of the autocomplete exclusion patterns
      */
     private fun shouldExcludeFromAutocomplete(filePath: String): Boolean {
-        val exclusionPatterns = SweepConfig.getInstance(project).getAutocompleteExclusionPatterns()
+        val exclusionPatterns = SweepSettings.getInstance().autocompleteExclusionPatterns
         if (exclusionPatterns.isEmpty()) return false
 
         val fileName = File(filePath).name
@@ -2227,31 +2193,8 @@ class RecentEditsTracker(
             }
             val fileChunks = getRelevantFileChunks()
             val otherOpenedFileChunks = getOtherOpenedFileChunks()
-            val clipboardText = getClipboardEntry()
-            val clipboardChunks =
-                clipboardText
-                    ?.takeIf {
-                        it.content.isNotBlank() &&
-                            it.getDuration() < 1000 * 60 &&
-                            // Validate by number of lines, not characters
-                            it.content.lines().size <= MAX_CLIPBOARD_LINES
-                    }?.let {
-                        listOf(
-                            FileChunk(
-                                file_path = "clipboard.txt",
-                                start_line = 1,
-                                end_line = minOf(it.content.lines().size, MAX_CLIPBOARD_LINES),
-                                content =
-                                    it
-                                        .content
-                                        .trim()
-                                        .lines()
-                                        .take(MAX_CLIPBOARD_LINES)
-                                        .joinToString("\n"),
-                                timestamp = System.currentTimeMillis(),
-                            ),
-                        )
-                    } ?: emptyList()
+            // ClipboardTrackingService removed with chat code; no clipboard chunks are sent.
+            val clipboardChunks: List<FileChunk> = emptyList()
             val allFileChunks = fileChunks + otherOpenedFileChunks
             val relPath = relativePath(project, filePath) ?: filePath
             var retrievalChunks = emptyList<FileChunk>()
@@ -2329,7 +2272,7 @@ class RecentEditsTracker(
                     retrieval_chunks = retrievalChunks,
                     recent_user_actions = recentUserActions.toList(),
                     multiple_suggestions = true,
-                    privacy_mode_enabled = SweepConfig.getInstance(project).isPrivacyModeEnabled(),
+                    privacy_mode_enabled = SweepMetaData.getInstance().privacyModeEnabled,
                     client_ip = clientIp,
                     recent_changes_high_res =
                         recentEditsHighRes

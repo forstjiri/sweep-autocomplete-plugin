@@ -3,11 +3,10 @@ package dev.sweep.assistant.listener
 import com.intellij.ide.plugins.DynamicPluginListener
 import com.intellij.ide.plugins.IdeaPluginDescriptor
 import com.intellij.openapi.diagnostic.Logger
-import dev.sweep.assistant.tracking.EventType
-import dev.sweep.assistant.tracking.TelemetryService
+import dev.sweep.assistant.services.LocalAutocompleteServerManager
 
 /**
- * Listener that sends telemetry when the Sweep plugin is uninstalled or unloaded.
+ * Cleans up the locally-launched autocomplete server when the plugin is being unloaded.
  */
 class PluginUnloadListener : DynamicPluginListener {
     companion object {
@@ -19,28 +18,11 @@ class PluginUnloadListener : DynamicPluginListener {
         pluginDescriptor: IdeaPluginDescriptor,
         isUpdate: Boolean,
     ) {
-        // Only send telemetry if this is our plugin and it's not an update
-        if (pluginDescriptor.pluginId.idString == SWEEP_PLUGIN_ID && !isUpdate) { // for some reason isUpdate is always false but that should be ok
-            logger.info("Sweep plugin is being uninstalled, sending telemetry event")
-            sendUninstallTelemetry()
-        }
-    }
-
-    /**
-     * Sends the uninstall telemetry event synchronously.
-     * We need to do this synchronously because the plugin is being unloaded.
-     */
-    private fun sendUninstallTelemetry() {
+        if (pluginDescriptor.pluginId.idString != SWEEP_PLUGIN_ID) return
         try {
-            // Send the telemetry event synchronously since we're about to be unloaded
-            TelemetryService.getInstance().sendUsageEvent(EventType.UNINSTALL_SWEEP)
-
-            // Give it a moment to complete the request
-            Thread.sleep(2000)
-
-            logger.info("Uninstall telemetry event sent successfully")
-        } catch (e: Exception) {
-            logger.warn("Failed to send uninstall telemetry event", e)
+            LocalAutocompleteServerManager.getInstance().stopServer()
+        } catch (e: Throwable) {
+            logger.warn("Failed to stop local autocomplete server during unload", e)
         }
     }
 }

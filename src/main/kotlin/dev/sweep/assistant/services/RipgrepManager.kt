@@ -132,20 +132,6 @@ class RipgrepManager : Disposable {
             else -> {
                 val errorMessage = "No ripgrep binary available for OS: $osName, Architecture: $osArch"
                 logger.debug(errorMessage)
-
-                // Send automated error report for unsupported platform
-                try {
-                    SweepErrorReportingService.getInstance().sendErrorReport(
-                        events = emptyArray(),
-                        additionalInfo = "Automatic error report: $errorMessage",
-                        parentComponent = javax.swing.JPanel(), // Use a concrete component
-                        pluginDescriptor = null,
-                        showUserNotification = false, // Don't show user notification
-                    )
-                } catch (e: Exception) {
-                    logger.warn("Failed to send error report for unsupported platform", e)
-                }
-
                 null
             }
         }
@@ -237,39 +223,10 @@ class RipgrepManager : Disposable {
                     val errorOutput = process.errorStream.bufferedReader().readText()
                     val errorMessage = "Ripgrep exited with non-zero code: $exitCode during version check. Output: $output. Error: $errorOutput"
                     logger.warn(errorMessage)
-
-                    // Send automated error report for ripgrep version check failure
-                    try {
-                        SweepErrorReportingService.getInstance().sendErrorReport(
-                            events = emptyArray(),
-                            additionalInfo = "Automatic error report: ripgrep $errorMessage",
-                            parentComponent = javax.swing.JPanel(),
-                            pluginDescriptor = null,
-                            showUserNotification = false, // Don't show user notification
-                        )
-                    } catch (reportException: Exception) {
-                        logger.warn("Failed to send error report for ripgrep version check failure", reportException)
-                    }
-
                     false
                 }
             } catch (e: Exception) {
-                val errorMessage = "Failed to execute ripgrep during version check: ${e.message}"
-                logger.warn("Failed to execute ripgrep", e)
-
-                // Send automated error report for ripgrep execution failure
-                try {
-                    SweepErrorReportingService.getInstance().sendErrorReport(
-                        events = emptyArray(),
-                        additionalInfo = "Automatic error report: ripgrep $errorMessage",
-                        parentComponent = javax.swing.JPanel(),
-                        pluginDescriptor = null,
-                        showUserNotification = false, // Don't show user notification
-                    )
-                } catch (reportException: Exception) {
-                    logger.warn("Failed to send error report for ripgrep execution failure", reportException)
-                }
-
+                logger.warn("Failed to execute ripgrep during version check", e)
                 false
             } finally {
                 // Always clean up the process, even if interrupted

@@ -8,8 +8,8 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
-import dev.sweep.assistant.agent.tools.TerminalApiWrapper
 import dev.sweep.assistant.settings.SweepSettings
+import org.jetbrains.plugins.terminal.ShellTerminalWidget
 import kotlinx.coroutines.*
 import org.jetbrains.plugins.terminal.TerminalToolWindowFactory
 import org.jetbrains.plugins.terminal.TerminalToolWindowManager
@@ -390,7 +390,22 @@ class LocalAutocompleteServerManager : Disposable {
                 ApplicationManager.getApplication().executeOnPooledThread {
                     Thread.sleep(1000)
                     ApplicationManager.getApplication().invokeLater {
-                        TerminalApiWrapper.sendCommand(targetWidget, command, project)
+                        try {
+                            val shellWidget = targetWidget as? ShellTerminalWidget
+                            if (shellWidget != null) {
+                                shellWidget.executeCommand(command)
+                            } else {
+                                // Fallback for non-ShellTerminalWidget implementations: write to TtyConnector
+                                val connector = targetWidget.ttyConnector
+                                if (connector != null) {
+                                    connector.write(command + "\n")
+                                } else {
+                                    logger.warn("Unable to send command to terminal widget: no shell widget or tty connector")
+                                }
+                            }
+                        } catch (e: Throwable) {
+                            logger.warn("Failed to send command to terminal widget", e)
+                        }
                     }
                 }
                 logger.info("Started local autocomplete server in terminal: $command")
@@ -404,7 +419,7 @@ class LocalAutocompleteServerManager : Disposable {
         }
     }
 
-    private fun stopServer() {
+    fun stopServer() {
         serverProcess?.let { process ->
             try {
                 process.destroy()

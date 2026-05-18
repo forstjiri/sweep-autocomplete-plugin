@@ -1,4 +1,4 @@
-package dev.sweep.assistant.views
+package dev.sweep.assistant.autocomplete.edit
 
 import com.intellij.codeInsight.completion.CompletionService
 import com.intellij.openapi.Disposable
@@ -27,10 +27,9 @@ import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBViewport
 import com.intellij.util.ui.JBUI
-import dev.sweep.assistant.autocomplete.edit.AcceptEditCompletionAction
-import dev.sweep.assistant.components.SweepConfig
 import dev.sweep.assistant.services.IdeaVimIntegrationService
 import dev.sweep.assistant.settings.SweepMetaData
+import dev.sweep.assistant.settings.SweepSettings
 import dev.sweep.assistant.theme.SweepColors
 import dev.sweep.assistant.theme.SweepIcons
 import dev.sweep.assistant.utils.DiffGroup
@@ -340,10 +339,10 @@ class PopupEditorComponent(
             JPanel(BorderLayout()).apply {
                 border = JBUI.Borders.empty(0, 4)
                 background = editor.backgroundColor
-                val config = SweepConfig.getInstance(project)
+                val settings = SweepSettings.getInstance()
                 val sweepMetaData = SweepMetaData.getInstance()
-                // Show footer if user explicitly enabled it OR if user hasn't disabled it and they're within first 10 accepts
-                val showFooter = config.isShowAutocompleteBadge() || sweepMetaData.autocompleteAcceptCount <= 3
+                // Show footer if user explicitly enabled it OR if user hasn't disabled it and they're within first few accepts
+                val showFooter = settings.showAutocompleteBadge || sweepMetaData.autocompleteAcceptCount <= 3
 
                 // Calculate the actual text height based on line count and line height
                 val lineCount = editor.document.lineCount

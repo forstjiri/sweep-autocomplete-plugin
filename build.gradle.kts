@@ -11,9 +11,8 @@ plugins {
     kotlin("plugin.serialization") version "1.9.20"
 }
 
-val remoteRobotVersion = "0.11.20"
 val pluginId = "dev.sweep.assistant"
-val pluginName = "Self-Hosted Enterprise Updater"
+val pluginName = "Sweep Autocomplete"
 println("Building plugin: $pluginName with ID: $pluginId")
 group = "dev.sweep"
 version = "1.29.3"
@@ -189,50 +188,16 @@ tasks {
         useJUnitPlatform()
         systemProperty("idea.force.use.core.classloader", "true")
         systemProperty("idea.use.core.classloader.for.plugin.path", "true")
-        // e2e tests require a running IDE plus the Remote Robot server on
-        // 127.0.0.1:8082. They are run via the dedicated `e2e` task; keep them
-        // out of the default test run.
-        exclude("dev/sweep/assistant/e2e/**")
     }
 
     verifyPlugin {}
 }
 
-val mcpVersion = "0.8.0"
-
 dependencies {
-    implementation("com.google.code.gson:gson:2.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.5.1")
     implementation("io.github.java-diff-utils:java-diff-utils:4.12")
     implementation("org.eclipse.jgit:org.eclipse.jgit:6.7.0.202309050840-r")
-    implementation("org.commonmark:commonmark:0.21.0")
-    implementation("org.commonmark:commonmark-ext-gfm-tables:0.21.0")
-    implementation("org.commonmark:commonmark-ext-autolink:0.21.0")
-    implementation("com.flipkart.zjsonpatch:zjsonpatch:0.4.14") {
-        // Exclude Jackson dependencies since we'll use IntelliJ's
-        exclude(group = "com.fasterxml.jackson.core")
-        exclude(group = "com.fasterxml.jackson.databind")
-    }
-    implementation("me.xdrop:fuzzywuzzy:1.4.0")
-    implementation("org.xerial:sqlite-jdbc:3.44.1.0")
     implementation("com.google.protobuf:protobuf-kotlin:3.23.4")
-    // MCP SDK - use JVM-specific artifacts for better compatibility
-    implementation("io.modelcontextprotocol:kotlin-sdk-client-jvm:$mcpVersion") {
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-core")
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-jdk8")
-    }
-    implementation("io.modelcontextprotocol:kotlin-sdk-core-jvm:$mcpVersion") {
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-core")
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-jdk8")
-    }
-    // Ktor client with CIO engine for MCP HTTP transports
-    implementation("io.ktor:ktor-client-cio:3.2.3") {
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-core")
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-jdk8")
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-slf4j")
-    }
-    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.18.1")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.aayushatharva.brotli4j:brotli4j:1.16.0")
     implementation("com.aayushatharva.brotli4j:native-osx-aarch64:1.16.0")
     implementation("com.aayushatharva.brotli4j:native-osx-x86_64:1.16.0")
@@ -241,18 +206,12 @@ dependencies {
     implementation("com.aayushatharva.brotli4j:native-windows-x86_64:1.16.0")
     implementation("com.aayushatharva.brotli4j:native-windows-aarch64:1.16.0")
 
-    testImplementation("org.mockito:mockito-core:5.2.0")
-    testImplementation("org.mockito:mockito-inline:5.2.0")
-    testImplementation("com.automation-remarks:video-recorder-junit5:2.0")
     testImplementation("org.junit.jupiter:junit-jupiter-api:5.10.0")
-    testImplementation("io.kotest:kotest-assertions-core:5.6.2")
     testImplementation("org.junit.jupiter:junit-jupiter:5.9.2")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.mockito:mockito-core:5.2.0")
+    testImplementation("io.kotest:kotest-assertions-core:5.6.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")
-
-    testImplementation("com.intellij.remoterobot:remote-robot:$remoteRobotVersion")
-    testImplementation("com.intellij.remoterobot:remote-fixtures:$remoteRobotVersion")
-    testImplementation("com.squareup.okhttp3:okhttp:4.11.0")
-
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.9.2")
     intellijPlatform {
         // https://www.jetbrains.com/idea/download/other.html

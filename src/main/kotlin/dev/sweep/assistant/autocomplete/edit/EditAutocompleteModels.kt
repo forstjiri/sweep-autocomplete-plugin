@@ -1,8 +1,11 @@
 package dev.sweep.assistant.autocomplete.edit
 
-import dev.sweep.assistant.data.BaseRequest
 import dev.sweep.assistant.utils.convertPythonToKotlinIndex
 import kotlinx.serialization.Serializable
+
+/** Marker base class for serialized request bodies. Kept for binary compatibility with the local server. */
+@Serializable
+open class BaseRequest
 
 const val MAX_HUNK_SIZE = 10
 const val MAX_TOKEN_COUNT = 8192

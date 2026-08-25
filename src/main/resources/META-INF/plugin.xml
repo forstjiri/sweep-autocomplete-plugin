@@ -56,6 +56,10 @@
             <keyboard-shortcut keymap="$default" first-keystroke="ESCAPE"/>
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="ESCAPE"/>
         </action>
+        <action id="dev.sweep.assistant.autocomplete.edit.NextEditCompletionAction"
+                class="dev.sweep.assistant.autocomplete.edit.NextEditCompletionAction"
+                text="Show Next Autocomplete Suggestion"
+                description="Show the next autocomplete suggestion from the current request"/>
         <action id="dev.sweep.assistant.autocomplete.edit.ClearAutocompleteRejectionCacheAction"
                 class="dev.sweep.assistant.autocomplete.edit.ClearAutocompleteRejectionCacheAction"
                 text="Show Last Rejected Suggestion"

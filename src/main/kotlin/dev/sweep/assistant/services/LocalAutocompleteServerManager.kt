@@ -14,8 +14,11 @@ import kotlinx.coroutines.*
 import org.jetbrains.plugins.terminal.TerminalToolWindowFactory
 import org.jetbrains.plugins.terminal.TerminalToolWindowManager
 import java.io.File
-import java.net.InetSocketAddress
-import java.net.Socket
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.time.Duration
 
 @Service(Service.Level.APP)
 class LocalAutocompleteServerManager : Disposable {
@@ -23,11 +26,12 @@ class LocalAutocompleteServerManager : Disposable {
         private val logger = Logger.getInstance(LocalAutocompleteServerManager::class.java)
         private const val DEFAULT_PORT = 8081
         private const val HEALTH_CHECK_TIMEOUT_MS = 3000L
-        private const val SERVER_START_TIMEOUT_MS = 30000L
-        private const val SERVER_POLL_INTERVAL_MS = 500L
         private const val HEALTH_CHECK_INTERVAL_MS = 10_000L
+        private const val TERMINAL_START_COOLDOWN_MS = 30_000L
         private const val TERMINAL_TAB_NAME = "Sweep Autocomplete Server"
         private const val LLAMA_CPP_VULKAN_INDEX = "https://abetlen.github.io/llama-cpp-python/whl/vulkan"
+        private const val SERVER_WHEEL_RELEASE_URL =
+            "https://github.com/forstjiri/sweep-autocomplete/releases/download/v0.1.2/sweep_autocomplete-0.1.2-py3-none-any.whl"
         private const val DEFAULT_MODEL_REPO = "sweepai/sweep-next-edit-0.5B"
         private const val DEFAULT_MODEL_FILENAME = "sweep-next-edit-0.5b.q8_0.gguf"
         private const val MODEL_15B_REPO = "sweepai/sweep-next-edit-1.5B"
@@ -38,16 +42,28 @@ class LocalAutocompleteServerManager : Disposable {
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    // Legacy background-start state is retained only for source compatibility;
-    // no request path invokes the background launcher anymore.
-    private var serverProcess: Process? = null
+    private val healthClient = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofMillis(HEALTH_CHECK_TIMEOUT_MS))
+        .build()
+
     @Volatile
-    private var isStarting = false
+    private var lastKnownHealthy = false
+
+    @Volatile
+    private var terminalStartInFlightUntil = 0L
+
     init {
         scope.launch {
             while (isActive) {
                 val healthy = isServerHealthy()
-                logger.debug("Local autocomplete terminal server health: $healthy")
+                if (lastKnownHealthy && !healthy) {
+                    logger.warn("Local autocomplete terminal server became unhealthy")
+                    showNotification(
+                        "Local autocomplete server stopped. Check the Sweep Autocomplete Server terminal tab.",
+                        NotificationType.WARNING,
+                    )
+                }
+                lastKnownHealthy = healthy
                 delay(HEALTH_CHECK_INTERVAL_MS)
             }
         }
@@ -93,61 +109,60 @@ class LocalAutocompleteServerManager : Disposable {
     }
 
     fun isServerHealthy(): Boolean =
-        // TCP-level probe: just check that something is accepting connections on the port.
-        // Avoids the HTTP `GET / 404` line the FastAPI server logs for every probe.
         try {
-            Socket().use { socket ->
-                socket.connect(InetSocketAddress("127.0.0.1", getPort()), HEALTH_CHECK_TIMEOUT_MS.toInt())
-                true
-            }
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create("${getServerUrl()}/health"))
+                .timeout(Duration.ofMillis(HEALTH_CHECK_TIMEOUT_MS))
+                .GET()
+                .build()
+            healthClient.send(request, HttpResponse.BodyHandlers.discarding()).statusCode() == 200
         } catch (e: Exception) {
             false
         }
 
-    @Synchronized
-    private fun startServer(onStatus: ((String) -> Unit)? = null) {
-        if (isStarting) return
-        if (isServerHealthy()) return
-        isStarting = true
-
-        try {
-            onStatus?.invoke("Looking for uvx on PATH...")
-            val uvxPath = resolveUvx()
-            if (uvxPath == null) {
-                logger.info("uvx not found, attempting to install uv")
-                onStatus?.invoke("uvx not found. Installing uv...")
-                installUv()
-                onStatus?.invoke("Checking for uvx after install...")
-                val uvxAfterInstall = resolveUvx()
-                if (uvxAfterInstall == null) {
-                    val msg = "Failed to find uvx after installing uv. Please install uv manually."
-                    onStatus?.invoke(msg)
-                    showNotification(
-                        "Failed to find uvx after installing uv. Please install uv manually: https://docs.astral.sh/uv/",
-                        NotificationType.ERROR,
-                    )
-                    return
-                }
-                onStatus?.invoke("Found uvx at $uvxAfterInstall. Starting server...")
-                startServerProcess(uvxAfterInstall, onStatus)
-            } else {
-                onStatus?.invoke("Found uvx at $uvxPath. Starting server...")
-                startServerProcess(uvxPath, onStatus)
-            }
-        } finally {
-            isStarting = false
-        }
-    }
-
     private val isWindows = System.getProperty("os.name").lowercase().contains("win")
 
+    private fun getPatchedServerWheel(): File? {
+        val configured = System.getenv("SWEEP_AUTOCOMPLETE_WHEEL")?.trim()?.takeIf { it.isNotEmpty() }
+        if (configured != null) return File(configured).takeIf { it.isFile }
+        val distRoot = File(System.getProperty("user.home"), "test/sweep-autocomplete")
+        return distRoot.listFiles()
+            ?.asSequence()
+            ?.filter { it.isDirectory }
+            ?.flatMap { directory ->
+                (directory.resolve("dist").listFiles() ?: emptyArray()).asSequence()
+            }
+            ?.filter { it.isFile && it.name.startsWith("sweep_autocomplete-") && it.name.endsWith("-py3-none-any.whl") }
+            ?.maxByOrNull { it.lastModified() }
+    }
+
     private fun buildUvxCommand(uvxPath: String, port: Int): List<String> =
-        if (isWindows) {
+        getPatchedServerWheel()?.let { wheel ->
+            logger.info("Using patched local sweep-autocomplete wheel: ${wheel.absolutePath}")
+            buildList {
+                add(uvxPath)
+                if (!isWindows) {
+                    add("--index")
+                    add(LLAMA_CPP_VULKAN_INDEX)
+                    add("--index-strategy")
+                    add("unsafe-best-match")
+                }
+                add("--from")
+                add(wheel.absolutePath)
+                add("sweep-autocomplete")
+                add("--gpu-profile")
+                add("auto")
+                add("--port")
+                add(port.toString())
+            }
+        } ?: if (isWindows) {
             listOf(
                 uvxPath,
                 "--python", "3.12",
                 "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cpu",
+                "--from", SERVER_WHEEL_RELEASE_URL,
                 "sweep-autocomplete",
+                "--gpu-profile", "auto",
                 "--port", port.toString(),
             )
         } else {
@@ -155,97 +170,12 @@ class LocalAutocompleteServerManager : Disposable {
                 uvxPath,
                 "--index", LLAMA_CPP_VULKAN_INDEX,
                 "--index-strategy", "unsafe-best-match",
+                "--from", SERVER_WHEEL_RELEASE_URL,
                 "sweep-autocomplete",
+                "--gpu-profile", "auto",
                 "--port", port.toString(),
             )
         }
-
-    private fun startServerProcess(uvxPath: String, onStatus: ((String) -> Unit)? = null) {
-        val port = getPort()
-        val model = getModelConfiguration() ?: return
-        val command = buildUvxCommand(uvxPath, port)
-        val pb = ProcessBuilder(command)
-
-        // Load environment using EnvironmentUtil pattern
-        try {
-            val env = com.intellij.util.EnvironmentUtil.getEnvironmentMap()
-            if (env.isNotEmpty()) {
-                pb.environment().apply {
-                    clear()
-                    putAll(env)
-                }
-            }
-            pb.environment()["MODEL_REPO"] = model.first
-            pb.environment()["MODEL_FILENAME"] = model.second
-        } catch (_: Throwable) {
-            // Fall back to default environment
-        }
-
-        // Redirect stdout to /dev/null — the server communicates via HTTP, not stdout.
-        // llama_cpp calls print() during generation which causes BrokenPipeError if stdout is a pipe.
-        pb.redirectOutput(ProcessBuilder.Redirect.to(File(if (isWindows) "NUL" else "/dev/null")))
-
-        try {
-            serverProcess = pb.start()
-            logger.info("Started local autocomplete server with: ${command.joinToString(" ")}")
-
-            // Consume stderr in background for logging
-            ApplicationManager.getApplication().executeOnPooledThread {
-                try {
-                    serverProcess?.errorStream?.bufferedReader()?.useLines { lines ->
-                        lines.forEach { line ->
-                            logger.info("Local autocomplete server: $line")
-                        }
-                    }
-                } catch (_: Exception) {
-                    // Process may have been closed
-                }
-            }
-
-            // Poll for health check up to 30 seconds
-            onStatus?.invoke("Waiting for server to become healthy...")
-            val startTime = System.currentTimeMillis()
-            while (System.currentTimeMillis() - startTime < SERVER_START_TIMEOUT_MS) {
-                if (isServerHealthy()) {
-                    logger.info("Local autocomplete server is healthy")
-                    onStatus?.invoke("Server is running on localhost:$port")
-                    showNotification("Local autocomplete server started successfully.", NotificationType.INFORMATION)
-                    return
-                }
-                // Check if process died
-                serverProcess?.let { proc ->
-                    if (!proc.isAlive) {
-                        logger.warn("Local autocomplete server process exited with code: ${proc.exitValue()}")
-                        val msg = "Server process exited with code ${proc.exitValue()}"
-                        onStatus?.invoke(msg)
-                        showNotification(
-                            "Local autocomplete server failed to start (exit code ${proc.exitValue()}).",
-                            NotificationType.ERROR,
-                        )
-                        serverProcess = null
-                        return
-                    }
-                }
-                val elapsed = (System.currentTimeMillis() - startTime) / 1000
-                onStatus?.invoke("Waiting for server to become healthy... (${elapsed}s)")
-                Thread.sleep(SERVER_POLL_INTERVAL_MS)
-            }
-
-            logger.warn("Local autocomplete server did not become healthy within ${SERVER_START_TIMEOUT_MS}ms")
-            onStatus?.invoke("Server did not start within 30 seconds.")
-            showNotification(
-                "Local autocomplete server did not start within 30 seconds.",
-                NotificationType.WARNING,
-            )
-        } catch (e: Exception) {
-            logger.warn("Failed to start local autocomplete server: ${e.message}")
-            onStatus?.invoke("Failed to start server: ${e.message}")
-            showNotification(
-                "Failed to start local autocomplete server: ${e.message}",
-                NotificationType.ERROR,
-            )
-        }
-    }
 
     private fun resolveUvx(): String? {
         // Load environment for PATH resolution
@@ -336,21 +266,26 @@ class LocalAutocompleteServerManager : Disposable {
     }
 
     fun restartServerInTerminal(project: Project) {
-        stopServer()
+        // Send Ctrl+C first and let the poll coroutine run afterwards, so the stop
+        // signal can never race against the newly started command.
         ApplicationManager.getApplication().invokeLater {
-            val toolWindow = ToolWindowManager.getInstance(project)
-                .getToolWindow(TerminalToolWindowFactory.TOOL_WINDOW_ID)
-            val content = toolWindow?.contentManager?.findContent(TERMINAL_TAB_NAME)
-            val widget = content?.let { TerminalToolWindowManager.findWidgetByContent(it) }
-            widget?.ttyConnector?.write("\u0003")
+            try {
+                val toolWindow = ToolWindowManager.getInstance(project)
+                    .getToolWindow(TerminalToolWindowFactory.TOOL_WINDOW_ID)
+                val content = toolWindow?.contentManager?.findContent(TERMINAL_TAB_NAME)
+                val widget = content?.let { TerminalToolWindowManager.findWidgetByContent(it) }
+                widget?.ttyConnector?.write("\u0003")
+            } catch (e: Exception) {
+                logger.warn("Failed to send Ctrl+C to terminal server tab: ${e.message}")
+            }
         }
         scope.launch {
             repeat(10) {
+                delay(500)
                 if (!isServerHealthy()) {
                     startServerInTerminal(project)
                     return@launch
                 }
-                delay(500)
             }
             logger.warn("Terminal autocomplete server did not stop after restart request")
         }
@@ -375,19 +310,31 @@ class LocalAutocompleteServerManager : Disposable {
             }
         }
         val model = getModelConfiguration() ?: return null
+        val localWheel = getPatchedServerWheel()
         val command = buildUvxCommand(uvxPath, getPort())
         if (isWindows) return command.joinToString(" ") { shellQuote(it) }
-        return "MODEL_REPO=${shellQuote(model.first)} MODEL_FILENAME=${shellQuote(model.second)} " +
+        if (localWheel != null) {
+            logger.info("Using local patched autocomplete server wheel: ${localWheel.absolutePath}")
+        } else {
+            logger.info("Using GitHub release autocomplete server wheel: $SERVER_WHEEL_RELEASE_URL")
+        }
+        return "SWEEP_GPU_PROFILE=auto " +
+            "MODEL_REPO=${shellQuote(model.first)} MODEL_FILENAME=${shellQuote(model.second)} " +
             command.joinToString(" ") { shellQuote(it) }
     }
 
     private fun shellQuote(value: String): String = "'${value.replace("'", "'\\''")}'"
 
     private fun addExitStatusNotice(command: String): String =
+        // Exit codes 130 (SIGINT) and 143 (SIGTERM) are intentional stops (e.g. Ctrl+C
+        // from the restart action), not crashes — don't report those.
         if (isWindows) {
-            "$command & set EXIT_CODE=%ERRORLEVEL% & if not %EXIT_CODE%==0 echo [Sweep Autocomplete] Server exited with code %EXIT_CODE%. Check the terminal output."
+            // The IDE terminal defaults to PowerShell on Windows.
+            "$command; if (\$LASTEXITCODE -ne 0 -and \$LASTEXITCODE -ne 130 -and \$LASTEXITCODE -ne 143) " +
+                "{ Write-Host \"[Sweep Autocomplete] Server exited with code \$LASTEXITCODE. Check the terminal output.\" }"
         } else {
-            "$command; exit_code=\$?; if [ \"\$exit_code\" -ne 0 ]; then printf '\\n[Sweep Autocomplete] Server exited with code %s. Check Vulkan/AMDGPU logs if this was a GPU crash.\\n' \"\$exit_code\"; fi"
+            "$command; exit_code=\$?; if [ \"\$exit_code\" -ne 0 ] && [ \"\$exit_code\" -ne 130 ] && [ \"\$exit_code\" -ne 143 ]; " +
+                "then printf '\\n[Sweep Autocomplete] Server exited with code %s. Check Vulkan/AMDGPU logs if this was a GPU crash.\\n' \"\$exit_code\"; fi"
         }
 
     /**
@@ -399,6 +346,15 @@ class LocalAutocompleteServerManager : Disposable {
             logger.info("Local autocomplete server is already running")
             return
         }
+
+        // Guard against concurrent starts (IDE startup + status bar click): a second
+        // command typed into the tab would land inside the running uvx process.
+        val now = System.currentTimeMillis()
+        if (now < terminalStartInFlightUntil) {
+            logger.info("Terminal server start already in flight; skipping duplicate start")
+            return
+        }
+        terminalStartInFlightUntil = now + TERMINAL_START_COOLDOWN_MS
 
         val command = getServerCommand()?.let(::addExitStatusNotice) ?: return
 

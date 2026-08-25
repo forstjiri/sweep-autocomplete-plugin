@@ -143,6 +143,13 @@ class AutocompleteStatusBarWidget(
             }
         }
 
+        items.add("Restart terminal server")
+        actions.add {
+            LocalAutocompleteServerManager.getInstance().restartServerInTerminal(project)
+            isAlive = false
+            updateWidget()
+        }
+
         items.add("Open settings")
         actions.add {
             ShowSettingsUtil.getInstance().showSettingsDialog(project, SweepSettingsConfigurable::class.java)

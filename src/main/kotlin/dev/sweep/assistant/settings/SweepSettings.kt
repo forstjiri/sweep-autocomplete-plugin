@@ -17,13 +17,15 @@ class SweepSettings : PersistentStateComponent<SweepSettings> {
     companion object {
         private const val DEFAULT_NEXT_EDIT_PREDICTION_ON = true
         private const val DEFAULT_ACCEPT_WORD_ON_RIGHT_ARROW = true
-        private const val DEFAULT_DEVELOPER_MODE_ON = false
-
         // -1L means "unset"; first access initializes to a sane default.
         private const val DEFAULT_AUTOCOMPLETE_DEBOUNCE_MS = -1L
 
         // Default to true - automatically disable conflicting autocomplete plugins on first run
         private const val DEFAULT_DISABLE_CONFLICTING_PLUGINS = true
+
+        const val MODEL_05B = "0.5B"
+        const val MODEL_15B = "1.5B"
+        const val MODEL_CUSTOM = "Custom"
 
         fun getInstance(): SweepSettings = ApplicationManager.getApplication().getService(SweepSettings::class.java)
     }
@@ -58,11 +60,6 @@ class SweepSettings : PersistentStateComponent<SweepSettings> {
             }
         }
 
-    var developerModeOn: Boolean = DEFAULT_DEVELOPER_MODE_ON
-        set(value) {
-            field = value
-        }
-
     /**
      * Autocomplete debounce delay in milliseconds, clamped to [10, 1000].
      * -1 means "unset"; callers should resolve to a default via [getDebounceThresholdMs].
@@ -95,6 +92,12 @@ class SweepSettings : PersistentStateComponent<SweepSettings> {
      * Local autocomplete server port. The plugin runs `sweep-autocomplete` on 127.0.0.1:<this>.
      */
     var autocompleteLocalPort: Int = 8081
+
+    var autocompleteModel: String = MODEL_05B
+
+    var customModelRepo: String = ""
+
+    var customModelFilename: String = ""
 
     /**
      * File-name patterns (globs) excluded from autocomplete suggestions.

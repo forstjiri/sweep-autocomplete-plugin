@@ -27,6 +27,11 @@ class LocalAutocompleteServerManager : Disposable {
         private const val SERVER_START_TIMEOUT_MS = 30000L
         private const val SERVER_POLL_INTERVAL_MS = 500L
         private const val TERMINAL_TAB_NAME = "Sweep Autocomplete Server"
+        private const val LLAMA_CPP_VULKAN_INDEX = "https://abetlen.github.io/llama-cpp-python/whl/vulkan"
+        private const val DEFAULT_MODEL_REPO = "sweepai/sweep-next-edit-0.5B"
+        private const val DEFAULT_MODEL_FILENAME = "sweep-next-edit-0.5b.q8_0.gguf"
+        private const val MODEL_15B_REPO = "sweepai/sweep-next-edit-1.5B"
+        private const val MODEL_15B_FILENAME = "sweep-next-edit-1.5b.q8_0.v2.gguf"
 
         fun getInstance(): LocalAutocompleteServerManager =
             ApplicationManager.getApplication().getService(LocalAutocompleteServerManager::class.java)
@@ -48,6 +53,20 @@ class LocalAutocompleteServerManager : Disposable {
         } catch (_: Exception) {
             DEFAULT_PORT
         }
+
+    private fun getModelConfiguration(): Pair<String, String>? {
+        val settings = SweepSettings.getInstance()
+        return when (settings.autocompleteModel) {
+            SweepSettings.MODEL_05B -> DEFAULT_MODEL_REPO to DEFAULT_MODEL_FILENAME
+            SweepSettings.MODEL_15B -> MODEL_15B_REPO to MODEL_15B_FILENAME
+            SweepSettings.MODEL_CUSTOM -> {
+                val repo = settings.customModelRepo.trim()
+                val filename = settings.customModelFilename.trim()
+                if (repo.isEmpty() || filename.isEmpty()) null else repo to filename
+            }
+            else -> DEFAULT_MODEL_REPO to DEFAULT_MODEL_FILENAME
+        }
+    }
 
     fun getServerUrl(): String = "http://localhost:${getPort()}"
 
@@ -127,11 +146,18 @@ class LocalAutocompleteServerManager : Disposable {
                 "--port", port.toString(),
             )
         } else {
-            listOf(uvxPath, "sweep-autocomplete", "--port", port.toString())
+            listOf(
+                uvxPath,
+                "--index", LLAMA_CPP_VULKAN_INDEX,
+                "--index-strategy", "unsafe-best-match",
+                "sweep-autocomplete",
+                "--port", port.toString(),
+            )
         }
 
     private fun startServerProcess(uvxPath: String, onStatus: ((String) -> Unit)? = null) {
         val port = getPort()
+        val model = getModelConfiguration() ?: return
         val command = buildUvxCommand(uvxPath, port)
         val pb = ProcessBuilder(command)
 
@@ -144,6 +170,8 @@ class LocalAutocompleteServerManager : Disposable {
                     putAll(env)
                 }
             }
+            pb.environment()["MODEL_REPO"] = model.first
+            pb.environment()["MODEL_FILENAME"] = model.second
         } catch (_: Throwable) {
             // Fall back to default environment
         }
@@ -320,6 +348,24 @@ class LocalAutocompleteServerManager : Disposable {
         startServer()
     }
 
+    fun restartServerInTerminal(project: Project) {
+        stopServer()
+        ApplicationManager.getApplication().invokeLater {
+            val toolWindow = ToolWindowManager.getInstance(project)
+                .getToolWindow(TerminalToolWindowFactory.TOOL_WINDOW_ID)
+            val content = toolWindow?.contentManager?.findContent(TERMINAL_TAB_NAME)
+            val widget = content?.let { TerminalToolWindowManager.findWidgetByContent(it) }
+            widget?.ttyConnector?.write("\u0003")
+        }
+        scope.launch {
+            repeat(10) {
+                if (!isServerHealthy()) return@launch
+                delay(500)
+            }
+            startServerInTerminal(project)
+        }
+    }
+
     /**
      * Builds the full command string for starting the server.
      * Returns null if uvx cannot be found (and uv install also fails).
@@ -338,8 +384,14 @@ class LocalAutocompleteServerManager : Disposable {
                 return null
             }
         }
-        return buildUvxCommand(uvxPath, getPort()).joinToString(" ")
+        val model = getModelConfiguration() ?: return null
+        val command = buildUvxCommand(uvxPath, getPort())
+        if (isWindows) return command.joinToString(" ") { shellQuote(it) }
+        return "MODEL_REPO=${shellQuote(model.first)} MODEL_FILENAME=${shellQuote(model.second)} " +
+            command.joinToString(" ") { shellQuote(it) }
     }
+
+    private fun shellQuote(value: String): String = "'${value.replace("'", "'\\''")}'"
 
     /**
      * Starts the local autocomplete server in a visible IDE terminal tab.
@@ -366,32 +418,35 @@ class LocalAutocompleteServerManager : Disposable {
                     null
                 }
 
-                val targetWidget = widget ?: run {
+                if (widget == null) {
                     val workDir = project.basePath ?: System.getProperty("user.home")
                     TerminalToolWindowManager
                         .getInstance(project)
                         .createShellWidget(workDir, TERMINAL_TAB_NAME, true, true)
                 }
 
-                // Small delay so the shell is ready to accept input, then send command
+                // Wait for the terminal shell/TTY to finish initializing before sending the command.
                 ApplicationManager.getApplication().executeOnPooledThread {
-                    Thread.sleep(1000)
-                    ApplicationManager.getApplication().invokeLater {
-                        try {
-                            val shellWidget = targetWidget as? ShellTerminalWidget
-                            if (shellWidget != null) {
-                                shellWidget.executeCommand(command)
-                            } else {
-                                // Fallback for non-ShellTerminalWidget implementations: write to TtyConnector
-                                val connector = targetWidget.ttyConnector
-                                if (connector != null) {
-                                    connector.write(command + "\n")
-                                } else {
-                                    logger.warn("Unable to send command to terminal widget: no shell widget or tty connector")
+                    var attempts = 0
+                    while (attempts++ < 20) {
+                        Thread.sleep(500)
+                        val readyWidget = toolWindow.contentManager.findContent(TERMINAL_TAB_NAME)?.let {
+                            TerminalToolWindowManager.findWidgetByContent(it)
+                        } ?: continue
+                        if (readyWidget is ShellTerminalWidget || readyWidget.ttyConnector != null) {
+                            ApplicationManager.getApplication().invokeLater {
+                                try {
+                                    val shellWidget = readyWidget as? ShellTerminalWidget
+                                    if (shellWidget != null) {
+                                        shellWidget.executeCommand(command)
+                                    } else {
+                                        readyWidget.ttyConnector?.write(command + "\n")
+                                    }
+                                } catch (e: Throwable) {
+                                    logger.warn("Failed to send command to terminal widget", e)
                                 }
                             }
-                        } catch (e: Throwable) {
-                            logger.warn("Failed to send command to terminal widget", e)
+                            break
                         }
                     }
                 }

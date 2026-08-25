@@ -157,9 +157,8 @@ sealed class AutocompleteSuggestion : Disposable {
             return popupEditor?.accept(editor) ?: run {
                 val document = editor.document
                 val docLen = document.textLength
-                val safeStart = startOffset.coerceIn(0, docLen)
-                val safeEnd = endOffset.coerceIn(safeStart, docLen)
-                document.replaceString(safeStart, safeEnd, content)
+                if (startOffset < 0 || endOffset < startOffset || endOffset > docLen) return@run null
+                document.replaceString(startOffset, endOffset, content)
                 null
             }
         }

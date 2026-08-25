@@ -69,6 +69,30 @@ data class EditorDiagnostic(
     val timestamp: Long = System.currentTimeMillis(),
 )
 
+/**
+ * The server renders {initial_file} from [NextEditAutocompleteRequest.original_file_contents] but
+ * locates the cursor with the *current* cursor_position / line numbers. If anything above the
+ * cursor line changed since the baseline was captured (inserted/deleted/edited lines), those
+ * coordinates point at the wrong spot in the rendered file and the model proposes edits on the
+ * wrong line.
+ *
+ * To keep both coordinate spaces in sync we resend the current contents as the baseline whenever
+ * the text above the cursor line is no longer identical. The "what changed recently" signal is
+ * unaffected: it is carried by recent_changes_high_res / recent_user_actions, not by this field.
+ */
+fun effectiveOriginalFileContents(
+    originalFileContents: String,
+    currentFileContents: String,
+    cursorPosition: Int,
+): String {
+    if (originalFileContents == currentFileContents) return originalFileContents
+    val clampedCursor = cursorPosition.coerceIn(0, currentFileContents.length)
+    val cursorLine = currentFileContents.subSequence(0, clampedCursor).count { it == '\n' }
+    val linesAboveCursorMatch =
+        originalFileContents.split('\n').take(cursorLine) == currentFileContents.split('\n').take(cursorLine)
+    return if (linesAboveCursorMatch) originalFileContents else currentFileContents
+}
+
 @Serializable
 data class NextEditAutocompleteRequest(
     val repo_name: String,
@@ -108,7 +132,10 @@ data class NextEditAutocompletion(
         end_index += offset
     }
 
-    fun applyChangesTo(original: String): String = original.substring(0, start_index) + completion + original.substring(end_index)
+    fun applyChangesTo(original: String): String? {
+        if (start_index < 0 || end_index < start_index || end_index > original.length) return null
+        return original.substring(0, start_index) + completion + original.substring(end_index)
+    }
 }
 
 @Serializable

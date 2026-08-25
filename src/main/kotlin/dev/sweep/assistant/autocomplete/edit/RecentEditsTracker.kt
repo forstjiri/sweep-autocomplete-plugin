@@ -387,6 +387,7 @@ class RecentEditsTracker(
     private val debouncer =
         Debouncer({ SweepSettings.getInstance().getDebounceThresholdMs() }, scope, project) { processLatestEdit() }
     private var lastDocumentText: String? = null
+    @Volatile
     private var originalDocumentText: String = ""
 
     // Track diagnostics with their first-seen timestamp
@@ -1334,6 +1335,8 @@ class RecentEditsTracker(
                                 metadata.autocompleteAcceptCount++
                             }
                         }
+                    // The accepted edit is now part of the current document baseline.
+                    originalDocumentText = document.text
 //                    if (suggestionQueue.isEmpty()) {
 //                        FileDocumentManager.getInstance().saveDocument(editor.document)
 //                    }
@@ -2069,7 +2072,10 @@ class RecentEditsTracker(
             val oldContent =
                 ApplicationManager.getApplication().runReadAction<CharSequence?> {
                     val docText = currentEditor.document.charsSequence
-                    if (response.end_index > docText.length) {
+                    if (response.start_index < 0 ||
+                        response.end_index < response.start_index ||
+                        response.end_index > docText.length
+                    ) {
                         null
                     } else {
                         docText.subSequence(
@@ -2187,7 +2193,7 @@ class RecentEditsTracker(
         try {
             val repoName = userSpecificRepoName(project)
             val originalFileContents = originalDocumentText
-            if (isFileTooLarge(originalFileContents, project)) {
+            if (isFileTooLarge(fileContents, project)) {
                 logger.warn("File is too large to fetch next edit autocomplete")
                 return null
             }
@@ -2267,7 +2273,11 @@ class RecentEditsTracker(
                             .filter { it.length <= MAX_DIFF_HUNK_SIZE }
                             .joinToString("\n"),
                     cursor_position = caretPosition,
-                    original_file_contents = originalFileContents,
+                    original_file_contents = effectiveOriginalFileContents(
+                        originalFileContents = originalFileContents,
+                        currentFileContents = fileContents,
+                        cursorPosition = caretPosition,
+                    ),
                     file_chunks = allFileChunks,
                     retrieval_chunks = retrievalChunks,
                     recent_user_actions = recentUserActions.toList(),

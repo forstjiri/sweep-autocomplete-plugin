@@ -24,6 +24,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.awt.Color
+import java.awt.RenderingHints
 import java.awt.event.MouseEvent
 import javax.swing.Icon
 
@@ -34,11 +36,14 @@ class AutocompleteStatusBarWidget(
     Disposable {
     companion object {
         const val ID = "SweepAutocompleteStatus"
-        private const val CHECK_INTERVAL_MS = 60_000L
+        private const val CHECK_INTERVAL_MS = 10_000L
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var isAlive = true
+    @Volatile
+    private var isAlive = false
+    @Volatile
+    private var isChecking = false
     private val snoozeService = AutocompleteSnoozeService.getInstance(project)
     private val snoozeStateListener = { updateWidget() }
     private val clickHandler = Consumer<MouseEvent> { event -> showPopupMenu(event) }
@@ -64,8 +69,6 @@ class AutocompleteStatusBarWidget(
 
     override fun getIcon(): Icon {
         val base = IconLoader.getIcon("/icons/sweep16x16.svg", javaClass)
-        val darker = snoozeService.isAutocompleteSnooze() || !isAlive || !SweepSettings.getInstance().nextEditPredictionFlagOn
-        if (!darker) return base
         return object : Icon {
             override fun paintIcon(
                 c: java.awt.Component?,
@@ -75,9 +78,27 @@ class AutocompleteStatusBarWidget(
             ) {
                 val g2 = g as? java.awt.Graphics2D
                 val original = g2?.composite
-                g2?.composite = java.awt.AlphaComposite.getInstance(java.awt.AlphaComposite.SRC_OVER, 0.5f)
+                val shouldDim = snoozeService.isAutocompleteSnooze() ||
+                    !isAlive ||
+                    !SweepSettings.getInstance().nextEditPredictionFlagOn
+                if (shouldDim) {
+                    g2?.composite = java.awt.AlphaComposite.getInstance(java.awt.AlphaComposite.SRC_OVER, 0.5f)
+                }
                 base.paintIcon(c, g, x, y)
                 g2?.composite = original
+
+                g2?.let { graphics ->
+                    val dotColor = when {
+                        !SweepSettings.getInstance().nextEditPredictionFlagOn ||
+                            snoozeService.isAutocompleteSnooze() -> Color.GRAY
+                        isChecking -> Color.ORANGE
+                        isAlive -> Color(0x35, 0xB7, 0x5D)
+                        else -> Color(0xD9, 0x3F, 0x3F)
+                    }
+                    graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    graphics.color = dotColor
+                    graphics.fillOval(x + iconWidth - 7, y + 1, 6, 6)
+                }
             }
 
             override fun getIconWidth(): Int = base.iconWidth
@@ -91,6 +112,7 @@ class AutocompleteStatusBarWidget(
         when {
             !SweepSettings.getInstance().nextEditPredictionFlagOn -> "Sweep Autocomplete: Disabled - Click for options"
             snoozeService.isAutocompleteSnooze() -> "Sweep Autocomplete: Snoozed (${snoozeService.formatRemainingTime()})"
+            isChecking -> "Sweep Autocomplete: Checking local server - Click for options"
             isAlive -> "Sweep Autocomplete: Online - Click for options"
             else -> "Sweep Autocomplete: Offline - Click for options"
         }
@@ -98,7 +120,10 @@ class AutocompleteStatusBarWidget(
     private fun startHealthCheck() {
         scope.launch {
             while (isActive) {
+                isChecking = true
+                updateWidget()
                 isAlive = LocalAutocompleteServerManager.getInstance().isServerHealthy()
+                isChecking = false
                 updateWidget()
                 delay(CHECK_INTERVAL_MS)
             }
@@ -110,6 +135,13 @@ class AutocompleteStatusBarWidget(
         val actions = mutableListOf<() -> Unit>()
 
         val settings = SweepSettings.getInstance()
+        items.add("Local server: ${when {
+            isChecking -> "checking..."
+            isAlive -> "running"
+            else -> "not running"
+        }}")
+        actions.add { }
+
         if (settings.nextEditPredictionFlagOn) {
             items.add("Disable Sweep Autocomplete")
             actions.add { settings.nextEditPredictionFlagOn = false; updateWidget() }

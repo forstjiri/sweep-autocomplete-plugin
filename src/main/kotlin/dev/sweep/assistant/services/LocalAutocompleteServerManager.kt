@@ -16,7 +16,6 @@ import org.jetbrains.plugins.terminal.TerminalToolWindowManager
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.util.concurrent.TimeUnit
 
 @Service(Service.Level.APP)
 class LocalAutocompleteServerManager : Disposable {
@@ -26,6 +25,7 @@ class LocalAutocompleteServerManager : Disposable {
         private const val HEALTH_CHECK_TIMEOUT_MS = 3000L
         private const val SERVER_START_TIMEOUT_MS = 30000L
         private const val SERVER_POLL_INTERVAL_MS = 500L
+        private const val HEALTH_CHECK_INTERVAL_MS = 10_000L
         private const val TERMINAL_TAB_NAME = "Sweep Autocomplete Server"
         private const val LLAMA_CPP_VULKAN_INDEX = "https://abetlen.github.io/llama-cpp-python/whl/vulkan"
         private const val DEFAULT_MODEL_REPO = "sweepai/sweep-next-edit-0.5B"
@@ -38,14 +38,20 @@ class LocalAutocompleteServerManager : Disposable {
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    // Legacy background-start state is retained only for source compatibility;
+    // no request path invokes the background launcher anymore.
     private var serverProcess: Process? = null
-    private var consecutiveFailures = 0
-    private var lastRestartTime = 0L
-    private val RESTART_THRESHOLD = 3
-    private val RESTART_COOLDOWN_MS = 60_000L // Don't restart more than once per minute
-
     @Volatile
     private var isStarting = false
+    init {
+        scope.launch {
+            while (isActive) {
+                val healthy = isServerHealthy()
+                logger.debug("Local autocomplete terminal server health: $healthy")
+                delay(HEALTH_CHECK_INTERVAL_MS)
+            }
+        }
+    }
 
     private fun getPort(): Int =
         try {
@@ -70,21 +76,20 @@ class LocalAutocompleteServerManager : Disposable {
 
     fun getServerUrl(): String = "http://localhost:${getPort()}"
 
-    fun ensureServerRunning() {
-        ensureServerRunning(null)
+    fun ensureServerRunning(): Boolean {
+        return ensureServerRunning(null)
     }
 
-    fun ensureServerRunning(onStatus: ((String) -> Unit)?) {
+    fun ensureServerRunning(onStatus: ((String) -> Unit)?): Boolean {
         onStatus?.invoke("Checking if server is already running...")
         if (isServerHealthy()) {
             onStatus?.invoke("Server is already running.")
-            return
+            return true
         }
-        if (isStarting) {
-            onStatus?.invoke("Server is already starting...")
-            return
-        }
-        startServer(onStatus)
+        // The server is owned by the visible terminal. Never start a hidden
+        // ProcessBuilder instance from an autocomplete request.
+        onStatus?.invoke("Local autocomplete server is not available.")
+        return false
     }
 
     fun isServerHealthy(): Boolean =
@@ -319,33 +324,15 @@ class LocalAutocompleteServerManager : Disposable {
     }
 
     fun reportSuccess() {
-        consecutiveFailures = 0
+        // Kept for the HTTP client lifecycle; restarts are terminal-only.
     }
 
     fun reportFailure() {
-        consecutiveFailures++
-        if (consecutiveFailures >= RESTART_THRESHOLD) {
-            val timeSinceLastRestart = System.currentTimeMillis() - lastRestartTime
-            if (timeSinceLastRestart < RESTART_COOLDOWN_MS) {
-                logger.info(
-                    "$consecutiveFailures consecutive failures, but last restart was ${timeSinceLastRestart / 1000}s ago " +
-                        "(cooldown: ${RESTART_COOLDOWN_MS / 1000}s). Skipping restart.",
-                )
-                // Reset counter so we don't log this every single request
-                consecutiveFailures = 0
-                return
-            }
-            logger.info("$consecutiveFailures consecutive failures, restarting local autocomplete server")
-            consecutiveFailures = 0
-            restartServer()
-        }
+        logger.debug("Local autocomplete terminal server request failed")
     }
 
     fun restartServer() {
-        logger.info("Restarting local autocomplete server")
-        lastRestartTime = System.currentTimeMillis()
-        stopServer()
-        startServer()
+        logger.info("Ignoring background server restart request; server is terminal-owned")
     }
 
     fun restartServerInTerminal(project: Project) {
@@ -359,10 +346,13 @@ class LocalAutocompleteServerManager : Disposable {
         }
         scope.launch {
             repeat(10) {
-                if (!isServerHealthy()) return@launch
+                if (!isServerHealthy()) {
+                    startServerInTerminal(project)
+                    return@launch
+                }
                 delay(500)
             }
-            startServerInTerminal(project)
+            logger.warn("Terminal autocomplete server did not stop after restart request")
         }
     }
 
@@ -393,6 +383,13 @@ class LocalAutocompleteServerManager : Disposable {
 
     private fun shellQuote(value: String): String = "'${value.replace("'", "'\\''")}'"
 
+    private fun addExitStatusNotice(command: String): String =
+        if (isWindows) {
+            "$command & set EXIT_CODE=%ERRORLEVEL% & if not %EXIT_CODE%==0 echo [Sweep Autocomplete] Server exited with code %EXIT_CODE%. Check the terminal output."
+        } else {
+            "$command; exit_code=\$?; if [ \"\$exit_code\" -ne 0 ]; then printf '\\n[Sweep Autocomplete] Server exited with code %s. Check Vulkan/AMDGPU logs if this was a GPU crash.\\n' \"\$exit_code\"; fi"
+        }
+
     /**
      * Starts the local autocomplete server in a visible IDE terminal tab.
      * If the server is already healthy, does nothing.
@@ -403,7 +400,7 @@ class LocalAutocompleteServerManager : Disposable {
             return
         }
 
-        val command = getServerCommand() ?: return
+        val command = getServerCommand()?.let(::addExitStatusNotice) ?: return
 
         ApplicationManager.getApplication().invokeLater {
             try {
@@ -462,18 +459,8 @@ class LocalAutocompleteServerManager : Disposable {
     }
 
     fun stopServer() {
-        serverProcess?.let { process ->
-            try {
-                process.destroy()
-                if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                    process.destroyForcibly()
-                }
-                logger.info("Stopped local autocomplete server")
-            } catch (e: Exception) {
-                logger.warn("Error stopping local autocomplete server: ${e.message}")
-            }
-            serverProcess = null
-        }
+        // The server is intentionally owned by the visible terminal process.
+        logger.debug("Skipping server stop; terminal owns the autocomplete process")
     }
 
     private fun showNotification(

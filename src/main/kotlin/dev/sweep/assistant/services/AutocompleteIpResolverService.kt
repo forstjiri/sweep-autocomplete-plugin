@@ -60,7 +60,7 @@ class AutocompleteIpResolverService(
     @RequiresBackgroundThread
     suspend fun fetchNextEditAutocomplete(request: NextEditAutocompleteRequest): NextEditAutocompleteResponse? {
         return try {
-            LocalAutocompleteServerManager.getInstance().ensureServerRunning()
+            if (!LocalAutocompleteServerManager.getInstance().ensureServerRunning()) return null
 
             val postData = defaultJson.encodeToString(NextEditAutocompleteRequest.serializer(), request)
             val postDataBytes = postData.toByteArray(Charsets.UTF_8)

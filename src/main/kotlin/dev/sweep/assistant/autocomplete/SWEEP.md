@@ -13,8 +13,6 @@ edit/
   AutocompleteImportDetector → Import fix detection and queue
   AutocompleteRejectionCache → Tracks rejected suggestions to avoid re-showing
 
-vim/
-  VimMotionGhostTextHandler  → IdeaVim crash workaround for inlays at column 0
 ```
 
 ## Key Concepts

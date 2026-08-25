@@ -27,7 +27,6 @@ import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBViewport
 import com.intellij.util.ui.JBUI
-import dev.sweep.assistant.services.IdeaVimIntegrationService
 import dev.sweep.assistant.settings.SweepMetaData
 import dev.sweep.assistant.settings.SweepSettings
 import dev.sweep.assistant.theme.SweepColors
@@ -691,13 +690,6 @@ class PopupEditorComponent(
                         addListener(
                             object : JBPopupListener {
                                 override fun onClosed(event: LightweightWindowEvent) {
-                                    if (!this@PopupEditorComponent.isDisposed) {
-                                        // This only hits if ESC was explicitly pressed. This ensures that user still enters normal mode in Vim.
-                                        // If the popup was closed via cursor movement, this won't get called
-                                        editor?.let { ed ->
-                                            IdeaVimIntegrationService.getInstance(project).callVimEscape(ed)
-                                        }
-                                    }
                                     this@PopupEditorComponent.dispose()
                                 }
                             },

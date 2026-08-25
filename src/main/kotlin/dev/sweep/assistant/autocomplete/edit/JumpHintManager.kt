@@ -10,14 +10,11 @@ import com.intellij.openapi.keymap.KeymapUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.JBPopup
 import com.intellij.openapi.ui.popup.JBPopupFactory
-import com.intellij.openapi.ui.popup.JBPopupListener
-import com.intellij.openapi.ui.popup.LightweightWindowEvent
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.JBColor
 import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.JBViewport
 import com.intellij.util.ui.JBUI
-import dev.sweep.assistant.services.IdeaVimIntegrationService
 import dev.sweep.assistant.theme.SweepColors
 import dev.sweep.assistant.theme.withAlpha
 import dev.sweep.assistant.utils.contrastWithTheme
@@ -147,17 +144,6 @@ class JumpHintManager(
                 .setCancelOnClickOutside(true)
                 .setShowBorder(false)
                 .createPopup()
-                .apply {
-                    addListener(
-                        object : JBPopupListener {
-                            override fun onClosed(event: LightweightWindowEvent) {
-                                // This only hits if ESC was explicitly pressed. This ensures that user still enters normal mode in Vim.
-                                // If the popup was closed via cursor movement, this won't get called
-                                IdeaVimIntegrationService.getInstance(project).callVimEscape(editor)
-                            }
-                        },
-                    )
-                }
 
         val editorComponent = editor.contentComponent
         // Use safe cast - parent may not be JBViewport in notebook editors (e.g., Jupyter)

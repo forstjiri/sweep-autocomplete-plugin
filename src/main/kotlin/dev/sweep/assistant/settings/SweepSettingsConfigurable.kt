@@ -1,5 +1,6 @@
 package dev.sweep.assistant.settings
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.FormBuilder
@@ -107,6 +108,7 @@ class SweepSettingsConfigurable(
             customModelFilenameField?.text != settings.customModelFilename
 
     override fun apply() {
+        val wasEnabled = settings.nextEditPredictionFlagOn
         val shouldRestartServer =
             modelComboBox?.selectedItem != settings.autocompleteModel ||
                 customModelRepoField?.text != settings.customModelRepo ||
@@ -124,6 +126,14 @@ class SweepSettingsConfigurable(
 
         if (shouldRestartServer && settings.nextEditPredictionFlagOn) {
             LocalAutocompleteServerManager.getInstance().restartServerInTerminal(project)
+        } else if (!wasEnabled && settings.nextEditPredictionFlagOn) {
+            // Autocomplete was just enabled — start the terminal server if it is not running yet.
+            ApplicationManager.getApplication().executeOnPooledThread {
+                val manager = LocalAutocompleteServerManager.getInstance()
+                if (!manager.isServerHealthy()) {
+                    manager.startServerInTerminal(project)
+                }
+            }
         }
     }
 

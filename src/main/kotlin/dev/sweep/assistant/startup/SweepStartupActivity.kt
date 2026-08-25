@@ -17,7 +17,6 @@ import dev.sweep.assistant.autocomplete.edit.EditorActionsRouterService
 import dev.sweep.assistant.autocomplete.edit.RecentEditsTracker
 import dev.sweep.assistant.autocomplete.edit.RejectEditCompletionAction
 import dev.sweep.assistant.services.FeatureFlagService
-import dev.sweep.assistant.services.IdeaVimIntegrationService
 import dev.sweep.assistant.services.NotificationDeduplicationService
 import dev.sweep.assistant.services.RipgrepManager
 import dev.sweep.assistant.services.SweepProjectService
@@ -42,7 +41,6 @@ class SweepStartupActivity : ProjectActivity {
         FeatureFlagService.getInstance(project)
         NotificationDeduplicationService.getInstance(project)
         RecentEditsTracker.getInstance(project)
-        IdeaVimIntegrationService.getInstance(project).configureIdeaVimIntegration()
 
         // Install the application-level accept/reject action router
         EditorActionsRouterService.getInstance()

@@ -169,7 +169,7 @@ class AutocompleteStatusBarWidget(
         items.add("Retry connection to local server")
         actions.add {
             scope.launch {
-                LocalAutocompleteServerManager.getInstance().ensureServerRunning()
+                LocalAutocompleteServerManager.getInstance().startServerInTerminal(project)
                 isAlive = LocalAutocompleteServerManager.getInstance().isServerHealthy()
                 updateWidget()
             }

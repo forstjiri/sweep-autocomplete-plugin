@@ -1,6 +1,5 @@
 package dev.sweep.assistant.autocomplete.edit
 
-import com.intellij.ide.DataManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.IdeActions.*
@@ -16,7 +15,6 @@ import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.EditorKind
-import com.intellij.openapi.editor.actionSystem.EditorActionManager
 import com.intellij.openapi.editor.event.CaretListener
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.editor.event.EditorFactoryEvent
@@ -35,7 +33,6 @@ import dev.sweep.assistant.autocomplete.Debouncer
 import dev.sweep.assistant.services.AutocompleteIpResolverService
 import dev.sweep.assistant.services.AutocompleteSnoozeService
 import dev.sweep.assistant.services.FeatureFlagService
-import dev.sweep.assistant.services.IdeaVimIntegrationService
 import dev.sweep.assistant.services.LocalAutocompleteServerManager
 import dev.sweep.assistant.services.NotificationDeduplicationService
 import dev.sweep.assistant.services.SweepProjectService
@@ -338,10 +335,14 @@ class RecentEditsTracker(
     private data class AutocompleteRequestEntry(
         val id: String = UUID.randomUUID().toString(),
         var editorState: EditorState,
+        val steering: String? = null,
+        val avoidCompletions: List<String> = emptyList(),
         val requestTime: Long = System.currentTimeMillis(),
     )
 
     private var currentJob: Job? = null
+    @Volatile
+    private var latestRequestTime = 0L
     private var consumerJob: Job? = null
     private val fetchJobs =
         ConcurrentHashMap<Long, CompletableDeferred<Pair<AutocompleteRequestEntry, NextEditAutocompleteResponse?>>>()
@@ -408,6 +409,28 @@ class RecentEditsTracker(
 
     var currentSuggestion: AutocompleteSuggestion? = null
     private var suggestionQueue: Queue<NextEditAutocompletion> = LinkedList()
+    private var steeringAttempt = 0
+    private var lastSteeredCompletion: String? = null
+    private val shownSteeredCompletions = mutableSetOf<String>()
+
+    /**
+     * Completions that were actually displayed (primaries of shown sets) together with
+     * the editor state they were rendered for. When a "next suggestion" press cannot
+     * produce anything new from the server, we cycle through this cache so the keypress
+     * never ends with no suggestion on screen.
+     */
+    private data class CachedCompletion(
+        val completion: NextEditAutocompletion,
+        val editorState: EditorState,
+    )
+
+    private val shownCompletionCache = mutableListOf<CachedCompletion>()
+    private var completionCacheCycleIndex = 0
+    private val steeringPrompts = listOf(
+        "Provide two different alternative next edit suggestions. Do not repeat the previous suggestion.",
+        "Suggest a different useful next edit at the current cursor. Use a different implementation and do not repeat the previous suggestion.",
+        "Try another plausible next edit suggestion. Avoid the previous suggestions and prefer a different location if appropriate.",
+    )
 
     // Queue for import fix suggestions with timestamps and validation data
     private data class ImportFixQueueEntry(
@@ -1509,13 +1532,49 @@ class RecentEditsTracker(
             tryProcessNextImportFix()
         }
 
-        if (IdeaVimIntegrationService.getInstance(project).isIdeaVimActive()) {
-            getCurrentEditor()?.let { editor ->
-                val dataContext = DataManager.getInstance().getDataContext(editor.component)
-                val escHandler = EditorActionManager.getInstance().getActionHandler(ACTION_EDITOR_ESCAPE)
-                escHandler.execute(editor, editor.caretModel.currentCaret, dataContext)
-            }
+    }
+
+    fun showNextSuggestion() {
+        logger.info("Next autocomplete suggestion requested")
+        lastSteeredCompletion = currentSuggestion?.content
+        currentSuggestion?.content?.let { shownSteeredCompletions.add(it) }
+        val previousCompletion = currentSuggestion?.content?.replace("\n", "\\n")?.take(500)
+        clearAutocomplete(AutocompleteDisposeReason.ESCAPE_PRESSED)
+        val steering = steeringPrompts[steeringAttempt % steeringPrompts.size] +
+            (previousCompletion?.let {
+                " Do not produce this previous completion or a trivial variation: $it"
+            } ?: "")
+        steeringAttempt++
+        processLatestEdit(steering = steering)
+    }
+
+    /**
+     * Last-resort fallback for "next suggestion": when the server cannot produce a
+     * fresh set (duplicates or empty responses even after retries), cycle through the
+     * completions that were already displayed for the current document state so the
+     * keypress never leaves the editor without a suggestion.
+     */
+    private fun showNextCachedCompletion() {
+        val currentState = getCurrentEditorState() ?: return
+        val validEntries = shownCompletionCache.filter {
+            it.editorState.documentText == currentState.documentText
         }
+        if (validEntries.isEmpty()) {
+            logger.info("No cached completion available for cycling")
+            return
+        }
+        val entry = validEntries[completionCacheCycleIndex % validEntries.size]
+        completionCacheCycleIndex = (completionCacheCycleIndex + 1) % validEntries.size
+        logger.info(
+            "Cycling cached completion: completion=${entry.completion.completion.replace("\n", "\\n").take(300)}, " +
+                "cacheSize=${validEntries.size}, index=${completionCacheCycleIndex}",
+        )
+        lastSteeredCompletion = entry.completion.completion
+        showAutocomplete(
+            entry.completion,
+            currentState,
+            forceShow = true,
+        )
     }
 
     private fun getCurrentEditorState(): EditorState? {
@@ -1841,7 +1900,18 @@ class RecentEditsTracker(
         return false
     }
 
-    fun processLatestEdit() {
+    fun processLatestEdit(steering: String? = null) {
+        if (steering == null) {
+            steeringAttempt = 0
+            lastSteeredCompletion = null
+            shownSteeredCompletions.clear()
+            shownCompletionCache.clear()
+            completionCacheCycleIndex = 0
+        } else {
+            // Invalidate an automatic response that may already be queued when the
+            // user requests another suggestion.
+            latestRequestTime = Long.MAX_VALUE
+        }
         currentJob?.cancel()
         currentJob =
             scope.launch {
@@ -1881,7 +1951,10 @@ class RecentEditsTracker(
                 val requestEntry =
                     AutocompleteRequestEntry(
                         editorState = editorState,
+                        steering = steering,
+                        avoidCompletions = if (steering != null) shownSteeredCompletions.toList() else emptyList(),
                     )
+                latestRequestTime = requestEntry.requestTime
 
                 val deferred = CompletableDeferred<Pair<AutocompleteRequestEntry, NextEditAutocompleteResponse?>>()
                 fetchAutocompleteRequest(requestEntry, deferred)
@@ -1907,7 +1980,15 @@ class RecentEditsTracker(
                     filePath = requestEntry.editorState.filePath,
                     fileContents = requestEntry.editorState.documentText,
                     caretPosition = requestEntry.editorState.cursorOffset,
+                     steering = requestEntry.steering,
+                     avoidCompletions = requestEntry.avoidCompletions,
                 )?.apply { adjustIndices(requestEntry.editorState.documentText) }
+            logger.info(
+                "Autocomplete response received: request=${requestEntry.requestTime}, " +
+                    "steering=${requestEntry.steering != null}, " +
+                    "completions=${response?.completions?.size ?: 0}, " +
+                    "offsets=${response?.completions?.joinToString { "${it.start_index}:${it.end_index}" } ?: "none"}",
+            )
             // println("Received response: ${response?.autocomplete_id} in ${System.currentTimeMillis() - requestEntry.requestTime}")
             deferred.complete(requestEntry to response)
             completionChannel.send(requestEntry to response)
@@ -1933,6 +2014,16 @@ class RecentEditsTracker(
                         val (request, response) = completionChannel.receive()
                         response ?: continue
 //                        println("Fetch jobs size: ${fetchJobs.size}")
+
+                        // Do not let an older automatic response recreate an overlay
+                        // after a newer manual request has started.
+                        if (request.requestTime != latestRequestTime) {
+                            logger.info(
+                                "Skipping stale autocomplete response before display: request=${request.requestTime}, " +
+                                    "latest=$latestRequestTime",
+                            )
+                            continue
+                        }
 
                         // First check if a change has already been proposed:
                         if (currentSuggestion != null) continue
@@ -1974,15 +2065,101 @@ class RecentEditsTracker(
                             fetchJobs.clear()
                         }
                         ApplicationManager.getApplication().invokeLater {
+                            if (request.requestTime != latestRequestTime) {
+                                logger.info(
+                                    "Skipping stale autocomplete response: request=${request.requestTime}, " +
+                                        "latest=$latestRequestTime",
+                                )
+                                return@invokeLater
+                            }
                             // Check if editor state is still valid
                             if (isAppliedCodeBlockActive()) {
                                 return@invokeLater
                             }
-                            response.completions.firstOrNull()?.let { firstResponse ->
-                                suggestionQueue.clear()
-                                response.completions.drop(1).forEach { suggestionQueue.add(it) }
-                                showAutocomplete(firstResponse, request.editorState)
+                                response.completions.firstOrNull()?.let { firstResponse ->
+                                    suggestionQueue.clear()
+                                val responseToShow = if (request.steering != null) {
+                                    // "Next suggestion" asks for a whole new set from the server.
+                                    // Only the primary completion of the fresh set qualifies;
+                                    // other hunks of a batch belong to the Tab flow.
+                                    if (firstResponse.completion !in shownSteeredCompletions) {
+                                        firstResponse
+                                    } else {
+                                        null
+                                    }
+                                } else {
+                                    firstResponse
+                                }
+                                if (request.steering != null && responseToShow == null) {
+                                    logger.info(
+                                        "Skipping duplicate steered autocomplete response: " +
+                                            "request=${request.requestTime}, completion=${firstResponse.completion.replace("\n", "\\n").take(300)}",
+                                    )
+                                    if (steeringAttempt < steeringPrompts.size) {
+                                        val previousCompletion = lastSteeredCompletion
+                                            ?.replace("\n", "\\n")
+                                            ?.take(500)
+                                        val retrySteering = steeringPrompts[steeringAttempt] +
+                                            (previousCompletion?.let {
+                                                " Do not produce this previous completion or a trivial variation: $it"
+                                            } ?: "")
+                                        processLatestEdit(
+                                            steering = retrySteering,
+                                        )
+                                        steeringAttempt++
+                                    } else {
+                                        logger.info("Stopping duplicate steering retries after ${steeringPrompts.size} attempts")
+                                        showNextCachedCompletion()
+                                    }
+                                    return@invokeLater
+                                }
+                                if (responseToShow != null) {
+                                    // Remember every hunk of the shown batch so a later
+                                    // "next suggestion" can never fall back to them.
+                                    response.completions.forEach { shownSteeredCompletions.add(it.completion) }
+                                    // Cache the displayed primary so a failed later
+                                    // "next suggestion" can cycle back to it.
+                                    if (shownCompletionCache.none {
+                                            it.completion === responseToShow ||
+                                                (
+                                                    it.editorState.documentText == request.editorState.documentText &&
+                                                        it.completion.completion == responseToShow.completion
+                                                )
+                                        }
+                                    ) {
+                                        shownCompletionCache.add(CachedCompletion(responseToShow, request.editorState))
+                                    }
+                                    if (request.steering != null) {
+                                        lastSteeredCompletion = responseToShow.completion
+                                    }
+                                    showAutocomplete(
+                                        responseToShow,
+                                        request.editorState,
+                                        forceShow = request.steering != null,
+                                    )
+                                }
                             } ?: run {
+                                if (request.steering != null) {
+                                    logger.info(
+                                        "Empty steered autocomplete response: request=${request.requestTime}, " +
+                                            "attempt=$steeringAttempt",
+                                    )
+                                    if (steeringAttempt < steeringPrompts.size) {
+                                        val previousCompletion = lastSteeredCompletion
+                                            ?.replace("\n", "\\n")
+                                            ?.take(500)
+                                        val retrySteering = steeringPrompts[steeringAttempt] +
+                                            (previousCompletion?.let {
+                                                " Do not produce this previous completion or a trivial variation: $it"
+                                            } ?: "")
+                                        processLatestEdit(steering = retrySteering)
+                                        steeringAttempt++
+                                    } else {
+                                        logger.info("Stopping empty steering retries after ${steeringPrompts.size} attempts")
+                                        showNextCachedCompletion()
+                                    }
+                                    return@invokeLater
+                                }
                                 // No suggestion was generated - track file contents for 1% of cases
                                 val sampleRatio =
                                     FeatureFlagService
@@ -2047,6 +2224,7 @@ class RecentEditsTracker(
         response: NextEditAutocompletion,
         requestState: EditorState? = null,
         isShowingPostJumpSuggestion: Boolean = false,
+        forceShow: Boolean = false,
     ) {
         val previousState = requestState ?: getCurrentEditorState() ?: return
 
@@ -2065,6 +2243,10 @@ class RecentEditsTracker(
             if (currentEditor.caretModel.offset != previousState.cursorOffset ||
                 currentEditor.document.text != previousState.documentText
             ) {
+                logger.info(
+                    "Skipping autocomplete response because editor state changed: " +
+                        "cursor=${previousState.cursorOffset}",
+                )
                 return@invokeLater
             }
 
@@ -2088,6 +2270,18 @@ class RecentEditsTracker(
                 return@invokeLater
             }
 
+            val startLine = currentEditor.document.getLineNumber(response.start_index)
+            val endLine = currentEditor.document.getLineNumber(response.end_index)
+            logger.info(
+                "Showing autocomplete suggestion: " +
+                    "start=${response.start_index} (line ${startLine + 1}), " +
+                    "end=${response.end_index} (line ${endLine + 1}), " +
+                    "cursor=${previousState.cursorOffset} (line ${previousState.line}), " +
+                    "oldContent=${oldContent.toString().replace("\n", "\\n").take(300)}, " +
+                    "completion=${response.completion.replace("\n", "\\n").take(500)}, " +
+                    "autocompleteId=${response.autocomplete_id}",
+            )
+
             debouncer.cancel()
 
             // Show the suggestion
@@ -2105,7 +2299,7 @@ class RecentEditsTracker(
                     numUsagesRetrieved = lastNumUsagesRetrieved
                 }?.let {
                     // Handle rejection caching
-                    if ((
+                    if (forceShow || (
                             AutocompleteRejectionCache.getInstance(project).checkIfSuggestionShouldBeShown(it) ||
                                 isShowingPostJumpSuggestion
                         ) ||
@@ -2189,6 +2383,8 @@ class RecentEditsTracker(
         filePath: String,
         fileContents: String,
         caretPosition: Int,
+        steering: String? = null,
+        avoidCompletions: List<String> = emptyList(),
     ): NextEditAutocompleteResponse? {
         try {
             val repoName = userSpecificRepoName(project)
@@ -2293,7 +2489,9 @@ class RecentEditsTracker(
                             .filter { it.length <= MAX_DIFF_HUNK_SIZE }
                             .joinToString("\n"),
                     changes_above_cursor = FeatureFlagService.getInstance(project).isFeatureEnabled("autocomplete-changes-above-cursor"),
-                    editor_diagnostics = getEditorDiagnostics(),
+                     editor_diagnostics = getEditorDiagnostics(),
+                    steering = steering,
+                    avoid_completions = avoidCompletions.take(10),
                 )
 
             val startTime = System.currentTimeMillis()
@@ -2325,15 +2523,18 @@ class RecentEditsTracker(
     }
 
     fun clearAutocomplete(autocompleteDisposeReason: AutocompleteDisposeReason) {
-        currentSuggestion?.disposedTime = System.currentTimeMillis()
-        if (currentSuggestion?.suggestionWasShownAtAll() == true) {
-            AutocompleteMetricsTracker.getInstance(project).trackSuggestionDisposed(currentSuggestion!!)
+        val suggestion = currentSuggestion ?: return
+        // Clear the reference before disposal because the suggestion's onDispose
+        // callback calls back into this method.
+        currentSuggestion = null
+        suggestion.disposedTime = System.currentTimeMillis()
+        if (suggestion.suggestionWasShownAtAll()) {
+            AutocompleteMetricsTracker.getInstance(project).trackSuggestionDisposed(suggestion)
             AutocompleteRejectionCache
                 .getInstance(project)
-                .tryAddingRejectionToCache(currentSuggestion!!, autocompleteDisposeReason)
+                .tryAddingRejectionToCache(suggestion, autocompleteDisposeReason)
         }
-        currentSuggestion?.let { Disposer.dispose(it) }
-        currentSuggestion = null
+        Disposer.dispose(suggestion)
     }
 
     /**

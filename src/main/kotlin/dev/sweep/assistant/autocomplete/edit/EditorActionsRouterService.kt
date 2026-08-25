@@ -105,6 +105,9 @@ class EditorActionsRouterService : Disposable {
     @Volatile
     private var activeRejectActions: Set<String> = emptySet()
 
+    @Volatile
+    private var activeNextActions: Set<String> = emptySet()
+
     private var lastAcceptKeystrokes: String = ""
     private var lastRejectKeystrokes: String = ""
 
@@ -116,6 +119,7 @@ class EditorActionsRouterService : Disposable {
 
         private const val ACCEPT_ACTION_ID = AcceptEditCompletionAction.ACTION_ID
         private const val REJECT_ACTION_ID = "dev.sweep.assistant.autocomplete.edit.RejectEditCompletionAction"
+        private const val NEXT_ACTION_ID = NextEditCompletionAction.ACTION_ID
     }
 
     init {
@@ -163,6 +167,11 @@ class EditorActionsRouterService : Disposable {
 
         activeRejectActions =
             getKeyStrokesForAction(REJECT_ACTION_ID)
+                .let { KeystrokeToEditorActionMapper.mapToEditorActions(it) }
+                .toSet()
+
+        activeNextActions =
+            getKeyStrokesForAction(NEXT_ACTION_ID)
                 .let { KeystrokeToEditorActionMapper.mapToEditorActions(it) }
                 .toSet()
     }
@@ -245,6 +254,11 @@ class EditorActionsRouterService : Disposable {
 
                             if (tracker == null) {
                                 original.execute(editor, caret, dataContext)
+                                return
+                            }
+
+                            if (actionId in activeNextActions && editor.document.isWritable) {
+                                tracker.showNextSuggestion()
                                 return
                             }
 

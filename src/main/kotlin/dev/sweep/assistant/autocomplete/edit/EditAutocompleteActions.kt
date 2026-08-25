@@ -21,6 +21,8 @@ import com.intellij.openapi.project.Project
  * 4. The plugin will automatically adapt to your custom keystrokes
  */
 abstract class EditCompletionActionBase : AnAction() {
+    protected open fun requiresCompletion() = true
+
     override fun getActionUpdateThread() = ActionUpdateThread.EDT
 
     override fun update(event: AnActionEvent) {
@@ -28,7 +30,9 @@ abstract class EditCompletionActionBase : AnAction() {
         val editor = event.getData(CommonDataKeys.EDITOR)
 
         val recentEditsTracker = RecentEditsTracker.getInstance(project)
-        event.presentation.isEnabledAndVisible = editor != null && recentEditsTracker.isCompletionShown
+        event.presentation.isEnabledAndVisible = editor != null &&
+            editor.document.isWritable &&
+            (!requiresCompletion() || recentEditsTracker.isCompletionShown)
     }
 
     protected abstract fun handleCompletion(
@@ -91,5 +95,25 @@ class RejectEditCompletionAction : EditCompletionActionBase() {
         editor: Editor,
     ) {
         RecentEditsTracker.getInstance(project).rejectSuggestion()
+    }
+}
+
+/**
+ * Shows the next suggestion already returned by the current autocomplete request.
+ *
+ * Default keystroke: Ctrl+Alt+N (Cmd+Alt+N on macOS).
+ */
+class NextEditCompletionAction : EditCompletionActionBase() {
+    companion object {
+        const val ACTION_ID = "dev.sweep.assistant.autocomplete.edit.NextEditCompletionAction"
+    }
+
+    override fun requiresCompletion() = false
+
+    override fun handleCompletion(
+        project: Project,
+        editor: Editor,
+    ) {
+        RecentEditsTracker.getInstance(project).showNextSuggestion()
     }
 }

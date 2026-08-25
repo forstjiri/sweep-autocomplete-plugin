@@ -8,10 +8,14 @@
     <name>Sweep Autocomplete</name>
 
     <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
-    <vendor email="support@sweep.dev" url="https://sweep.dev">Sweep AI</vendor>
+    <vendor email="forstjiri@gmail.com" url="https://github.com/forstjiri/sweep-autocomplete-plugin">forstjiri</vendor>
 
     <description><![CDATA[
-    Local inline next-edit autocomplete powered by the <code>sweep-autocomplete</code> model running on your machine.
+    Local-only inline next-edit autocomplete for JetBrains IDEs. Inference runs on your machine using the Sweep model. The plugin downloads the server and model on first use and starts the server in the built-in terminal. No source code is sent to a hosted autocomplete service.
+    <br><br>
+    <b>First run:</b> allow a few minutes for uv, the server, and the selected model to download. GPU acceleration is automatic; CPU fallback is available.
+    <br><br>
+    <a href="https://github.com/forstjiri/sweep-autocomplete-plugin#quick-start">Quick start and troubleshooting</a>
     ]]></description>
 
     <!-- Product and plugin compatibility requirements.

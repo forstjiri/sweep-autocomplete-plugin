@@ -15,7 +15,7 @@ val pluginId = "dev.sweep.assistant"
 val pluginName = "Sweep Autocomplete"
 println("Building plugin: $pluginName with ID: $pluginId")
 group = "dev.sweep"
-version = "1.29.3"
+version = "1.29.4"
 
 repositories {
     mavenCentral()
@@ -37,7 +37,7 @@ intellijPlatform {
             select {
                 types.set(listOf(IntelliJPlatformType.WebStorm))
                 channels.set(listOf(ProductRelease.Channel.RELEASE))
-                sinceBuild.set("242")
+                sinceBuild.set("251")
                 untilBuild.set("262.*")
             }
 //            select {
@@ -63,7 +63,7 @@ intellijPlatform {
                     ),
                 )
                 channels.set(listOf(ProductRelease.Channel.RELEASE))
-                sinceBuild.set("241")
+                sinceBuild.set("251")
                 untilBuild.set("262.*")
             }
         }
@@ -82,7 +82,7 @@ tasks {
     }
 
     patchPluginXml {
-        sinceBuild.set("241")
+        sinceBuild.set("251")
         untilBuild.set("262.*")
     }
 

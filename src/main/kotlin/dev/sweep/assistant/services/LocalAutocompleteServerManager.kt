@@ -52,6 +52,9 @@ class LocalAutocompleteServerManager : Disposable {
     @Volatile
     private var terminalStartInFlightUntil = 0L
 
+    @Volatile
+    private var firstStartNoticeShown = false
+
     init {
         scope.launch {
             while (isActive) {
@@ -357,6 +360,14 @@ class LocalAutocompleteServerManager : Disposable {
         terminalStartInFlightUntil = now + TERMINAL_START_COOLDOWN_MS
 
         val command = getServerCommand()?.let(::addExitStatusNotice) ?: return
+
+        if (!firstStartNoticeShown) {
+            firstStartNoticeShown = true
+            showNotification(
+                "Starting the local autocomplete server in the Terminal. The first start downloads uv, the server, and the selected model.",
+                NotificationType.INFORMATION,
+            )
+        }
 
         ApplicationManager.getApplication().invokeLater {
             try {

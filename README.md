@@ -20,6 +20,19 @@ about one second, depending on the model, prompt size, hardware, and system
 load. AMD integrated graphics with Vulkan are one tested configuration; other
 GPU backends may require different llama.cpp packages or runtime settings.
 
+## Quick Start
+
+1. Install **Sweep Autocomplete** from JetBrains Marketplace.
+2. Open a project and wait for the **Sweep Autocomplete Server** terminal tab.
+3. On the first start, wait while `uv`, the server, and the selected model are
+   downloaded. The model stays on your machine.
+4. Put the caret in a writable file and wait for a suggestion. Press `Tab` to
+   accept it.
+
+Inference is local. The plugin uses the GitHub server release automatically;
+developers can override it with a wheel under
+`~/test/sweep-autocomplete/*/dist/` or `SWEEP_AUTOCOMPLETE_WHEEL`.
+
 ## Local Server
 
 The patched server is published at
@@ -105,8 +118,12 @@ IntelliJ's keymap settings.
 5. The plugin will automatically adapt to your custom keystrokes without
    requiring a restart
 
-The next-suggestion action first cycles through alternatives already returned by
-the server. When those are exhausted, it sends a new request from the current
-cursor with a steering prompt requesting a different edit.
+The next-suggestion action first uses alternatives already returned by the
+server. When those are exhausted, it requests a new suggestion from the current
+cursor; if the server cannot produce a new one, it cycles through cached
+suggestions for the current document.
+
+The next-suggestion action has no default shortcut to avoid conflicts. Assign
+one in the Keymap settings.
 
 The keystroke must map to a standard editor action to be intercepted reliably.

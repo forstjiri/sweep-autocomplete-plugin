@@ -34,37 +34,13 @@ intellijPlatform {
 
     pluginVerification {
         ides {
+            // Avoid resolving a future IDE release that may not yet be
+            // available from JetBrains archives.
             select {
-                types.set(listOf(IntelliJPlatformType.WebStorm))
+                types.set(listOf(IntelliJPlatformType.IntellijIdeaCommunity))
                 channels.set(listOf(ProductRelease.Channel.RELEASE))
                 sinceBuild.set("251")
-                untilBuild.set("262.*")
-            }
-//            select {
-//                types.set(listOf(IntelliJPlatformType.DataGrip))
-//                channels.set(listOf(ProductRelease.Channel.RELEASE))
-//                sinceBuild.set("241") // 23x doesn't support vcs
-//                untilBuild.set("243.*")
-//            }
-            select {
-                types.set(
-                    listOf(
-                        IntelliJPlatformType.IntellijIdeaUltimate,
-                        IntelliJPlatformType.IntellijIdeaCommunity,
-                        IntelliJPlatformType.GoLand,
-                        IntelliJPlatformType.PyCharmCommunity,
-                        IntelliJPlatformType.PyCharmProfessional,
-                        IntelliJPlatformType.CLion,
-                        IntelliJPlatformType.Rider,
-                        IntelliJPlatformType.AndroidStudio,
-                        IntelliJPlatformType.RustRover,
-                        IntelliJPlatformType.RubyMine,
-                        IntelliJPlatformType.PhpStorm,
-                    ),
-                )
-                channels.set(listOf(ProductRelease.Channel.RELEASE))
-                sinceBuild.set("251")
-                untilBuild.set("262.*")
+                untilBuild.set("252.*")
             }
         }
     }

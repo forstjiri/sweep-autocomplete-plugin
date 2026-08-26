@@ -1,4 +1,4 @@
-# JetBrains Extension for Sweep - VULCAN
+# Vulcan Sweep
 
 Installable releases are published at
 https://github.com/forstjiri/sweep-autocomplete-plugin/releases.
@@ -20,25 +20,45 @@ about one second, depending on the model, prompt size, hardware, and system
 load. AMD integrated graphics with Vulkan are one tested configuration; other
 GPU backends may require different llama.cpp packages or runtime settings.
 
+## Requirements
+
+Vulcan Sweep needs two things on first start, and both are set up for you
+automatically:
+
+1. **`uv`** — a small Python tool runner. If it is not installed, the plugin
+   installs it from [astral.sh/uv](https://astral.sh/uv).
+2. **`llama-cpp-python` with GPU support** — the local inference engine. On
+   Linux the plugin uses the community
+   [Vulkan wheels](https://abetlen.github.io/llama-cpp-python/whl/vulkan)
+   (best for AMD GPUs); on Windows it falls back to CPU wheels. `uv` downloads
+   these packages once on first start.
+
+The autocomplete server itself ships **inside the plugin** — nothing else to
+install. The AI model (~0.5–2 GB) is downloaded once from
+[Hugging Face](https://huggingface.co/sweepai) and stays on your machine.
+
+First start therefore takes a few minutes. Everything afterwards runs fully
+offline and local.
+
 ## Quick Start
 
-1. Install **Sweep Autocomplete** from JetBrains Marketplace.
-2. Open a project and wait for the **Sweep Autocomplete Server** terminal tab.
-3. On the first start, wait while `uv`, the server, and the selected model are
+1. Install **Vulcan Sweep** from JetBrains Marketplace.
+2. Open a project and wait for the **Vulcan Sweep Server** terminal tab.
+3. On the first start, wait while the packages and the selected model are
    downloaded. The model stays on your machine.
 4. Put the caret in a writable file and wait for a suggestion. Press `Tab` to
    accept it.
 
-Inference is local. The plugin uses the GitHub server release automatically;
+Inference is local. The server runs from the wheel bundled with the plugin;
 developers can override it with a wheel under
 `~/test/sweep-autocomplete/*/dist/` or `SWEEP_AUTOCOMPLETE_WHEEL`.
 
 ## Local Server
 
-The patched server is published at
-https://github.com/forstjiri/sweep-autocomplete. The plugin downloads the
-pinned `v0.1.3` wheel from that repository when no local development wheel is
-available.
+The server source is published at
+https://github.com/forstjiri/sweep-autocomplete. The plugin bundles the
+matching wheel and falls back to that repository's `v0.1.3` release only when
+the bundled copy is unavailable.
 
 The server runs exclusively in the visible PhpStorm/IntelliJ terminal. The
 plugin never starts a hidden background server. It checks the server health

@@ -11,11 +11,11 @@ plugins {
     kotlin("plugin.serialization") version "1.9.20"
 }
 
-val pluginId = "dev.sweep.assistant"
-val pluginName = "Sweep Autocomplete"
+val pluginId = "dev.forstjiri.vulcansweep"
+val pluginName = "Vulcan Sweep"
 println("Building plugin: $pluginName with ID: $pluginId")
 group = "dev.sweep"
-version = "1.29.8"
+version = "1.30.0"
 
 repositories {
     mavenCentral()

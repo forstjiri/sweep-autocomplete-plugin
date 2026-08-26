@@ -28,10 +28,11 @@ class LocalAutocompleteServerManager : Disposable {
         private const val HEALTH_CHECK_TIMEOUT_MS = 3000L
         private const val HEALTH_CHECK_INTERVAL_MS = 10_000L
         private const val TERMINAL_START_COOLDOWN_MS = 30_000L
-        private const val TERMINAL_TAB_NAME = "Sweep Autocomplete Server"
+        private const val TERMINAL_TAB_NAME = "Vulcan Sweep Server"
         private const val LLAMA_CPP_VULKAN_INDEX = "https://abetlen.github.io/llama-cpp-python/whl/vulkan"
         private const val SERVER_WHEEL_RELEASE_URL =
             "https://github.com/forstjiri/sweep-autocomplete/releases/download/v0.1.3/sweep_autocomplete-0.1.3-py3-none-any.whl"
+        private const val BUNDLED_SERVER_WHEEL_NAME = "sweep_autocomplete-0.1.3-py3-none-any.whl"
         private const val DEFAULT_MODEL_REPO = "sweepai/sweep-next-edit-0.5B"
         private const val DEFAULT_MODEL_FILENAME = "sweep-next-edit-0.5b.q8_0.gguf"
         private const val MODEL_15B_REPO = "sweepai/sweep-next-edit-1.5B"
@@ -129,19 +130,46 @@ class LocalAutocompleteServerManager : Disposable {
         val configured = System.getenv("SWEEP_AUTOCOMPLETE_WHEEL")?.trim()?.takeIf { it.isNotEmpty() }
         if (configured != null) return File(configured).takeIf { it.isFile }
         val distRoot = File(System.getProperty("user.home"), "test/sweep-autocomplete")
-        return distRoot.listFiles()
-            ?.asSequence()
-            ?.filter { it.isDirectory }
-            ?.flatMap { directory ->
-                (directory.resolve("dist").listFiles() ?: emptyArray()).asSequence()
-            }
-            ?.filter { it.isFile && it.name.startsWith("sweep_autocomplete-") && it.name.endsWith("-py3-none-any.whl") }
-            ?.maxByOrNull { it.lastModified() }
+        val devWheel =
+            distRoot.listFiles()
+                ?.asSequence()
+                ?.filter { it.isDirectory }
+                ?.flatMap { directory ->
+                    (directory.resolve("dist").listFiles() ?: emptyArray()).asSequence()
+                }
+                ?.filter { it.isFile && it.name.startsWith("sweep_autocomplete-") && it.name.endsWith("-py3-none-any.whl") }
+                ?.maxByOrNull { it.lastModified() }
+        if (devWheel != null) return devWheel
+        return extractBundledServerWheel()
     }
+
+    /**
+     * Copies the server wheel bundled in the plugin distribution to a per-plugin
+     * cache directory, so no code has to be downloaded at runtime. The version is
+     * part of the resource name, so each plugin release caches its own wheel.
+     */
+    private fun extractBundledServerWheel(): File? =
+        runCatching {
+            val resource = "/wheels/$BUNDLED_SERVER_WHEEL_NAME"
+            val stream = javaClass.getResourceAsStream(resource) ?: return null
+            val cacheDir =
+                File(
+                    com.intellij.openapi.application.PathManager.getPluginTempPath(),
+                    "vulcan-sweep-wheels",
+                ).apply { mkdirs() }
+            val target = cacheDir.resolve(BUNDLED_SERVER_WHEEL_NAME)
+            if (!target.isFile || target.length() == 0L) {
+                stream.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+                logger.info("Extracted bundled server wheel to ${target.absolutePath}")
+            }
+            target.takeIf { it.isFile }
+        }.onFailure {
+            logger.warn("Failed to extract bundled server wheel: ${it.message}")
+        }.getOrNull()
 
     private fun buildUvxCommand(uvxPath: String, port: Int): List<String> =
         getPatchedServerWheel()?.let { wheel ->
-            logger.info("Using patched local sweep-autocomplete wheel: ${wheel.absolutePath}")
+            logger.info("Using local sweep-autocomplete wheel: ${wheel.absolutePath}")
             buildList {
                 add(uvxPath)
                 if (!isWindows) {

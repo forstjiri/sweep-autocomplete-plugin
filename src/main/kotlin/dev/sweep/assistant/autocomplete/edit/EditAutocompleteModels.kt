@@ -132,7 +132,6 @@ data class NextEditAutocompletion(
 
 @Serializable
 data class NextEditAutocompleteResponse(
-    // these are unused now, backwards compatibility
     var start_index: Int,
     var end_index: Int,
     val completion: String,

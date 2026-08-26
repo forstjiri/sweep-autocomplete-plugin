@@ -15,7 +15,7 @@ val pluginId = "dev.forstjiri.vulcansweep"
 val pluginName = "Vulcan Sweep"
 println("Building plugin: $pluginName with ID: $pluginId")
 group = "dev.sweep"
-version = "1.30.1"
+version = "1.31.0"
 
 repositories {
     mavenCentral()

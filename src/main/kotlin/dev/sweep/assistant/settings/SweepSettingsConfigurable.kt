@@ -26,6 +26,7 @@ class SweepSettingsConfigurable(
     private var enableAutocompleteCheckBox: JCheckBox? = null
     private var acceptWordOnRightArrowCheckBox: JCheckBox? = null
     private var disableConflictingPluginsCheckBox: JCheckBox? = null
+    private var nativeEngineCheckBox: JCheckBox? = null
     private var debounceSlider: JSlider? = null
     private var debounceValueLabel: JLabel? = null
     private var localPortSpinner: JSpinner? = null
@@ -51,6 +52,8 @@ class SweepSettingsConfigurable(
             JCheckBox("Accept next word on Right Arrow", settings.acceptWordOnRightArrow)
         disableConflictingPluginsCheckBox =
             JCheckBox("Automatically disable conflicting autocomplete plugins", settings.disableConflictingPlugins)
+        nativeEngineCheckBox =
+            JCheckBox("Use native engine (llama-server direct)", settings.autocompleteLocalNativeEngine)
         val effectiveDebounce = settings.getDebounceThresholdMs().toInt().coerceIn(10, 1000)
         debounceSlider =
             JSlider(10, 1000, effectiveDebounce).apply {
@@ -83,6 +86,13 @@ class SweepSettingsConfigurable(
                 .addComponent(enableAutocompleteCheckBox!!)
                 .addComponent(acceptWordOnRightArrowCheckBox!!)
                 .addComponent(disableConflictingPluginsCheckBox!!)
+                .addComponent(nativeEngineCheckBox!!)
+                .addComponent(
+                    JLabel(
+                        "Native engine builds prompts in-process and calls llama-server directly (faster). " +
+                            "Requires llama-server on PATH; otherwise the bundled Python server is used.",
+                    ),
+                )
                 .addLabeledComponent("Autocomplete model:", modelComboBox!!)
                 .addLabeledComponent("Custom model repository:", customModelRepoField!!)
                 .addLabeledComponent("Custom GGUF filename:", customModelFilenameField!!)
@@ -101,6 +111,7 @@ class SweepSettingsConfigurable(
         enableAutocompleteCheckBox?.isSelected != settings.nextEditPredictionFlagOn ||
             acceptWordOnRightArrowCheckBox?.isSelected != settings.acceptWordOnRightArrow ||
             disableConflictingPluginsCheckBox?.isSelected != settings.disableConflictingPlugins ||
+            nativeEngineCheckBox?.isSelected != settings.autocompleteLocalNativeEngine ||
             (debounceSlider?.value?.toLong() ?: settings.getDebounceThresholdMs()) != settings.getDebounceThresholdMs() ||
             (localPortSpinner?.value as? Int) != settings.autocompleteLocalPort ||
             modelComboBox?.selectedItem != settings.autocompleteModel ||
@@ -113,11 +124,13 @@ class SweepSettingsConfigurable(
             modelComboBox?.selectedItem != settings.autocompleteModel ||
                 customModelRepoField?.text != settings.customModelRepo ||
                 customModelFilenameField?.text != settings.customModelFilename ||
-                (localPortSpinner?.value as? Int) != settings.autocompleteLocalPort
+                (localPortSpinner?.value as? Int) != settings.autocompleteLocalPort ||
+                nativeEngineCheckBox?.isSelected != settings.autocompleteLocalNativeEngine
 
         enableAutocompleteCheckBox?.isSelected?.let { settings.nextEditPredictionFlagOn = it }
         acceptWordOnRightArrowCheckBox?.isSelected?.let { settings.acceptWordOnRightArrow = it }
         disableConflictingPluginsCheckBox?.isSelected?.let { settings.disableConflictingPlugins = it }
+        nativeEngineCheckBox?.isSelected?.let { settings.autocompleteLocalNativeEngine = it }
         debounceSlider?.value?.toLong()?.let { settings.autocompleteDebounceMs = it }
         (localPortSpinner?.value as? Int)?.let { settings.autocompleteLocalPort = it }
         (modelComboBox?.selectedItem as? String)?.let { settings.autocompleteModel = it }
@@ -141,6 +154,7 @@ class SweepSettingsConfigurable(
         enableAutocompleteCheckBox?.isSelected = settings.nextEditPredictionFlagOn
         acceptWordOnRightArrowCheckBox?.isSelected = settings.acceptWordOnRightArrow
         disableConflictingPluginsCheckBox?.isSelected = settings.disableConflictingPlugins
+        nativeEngineCheckBox?.isSelected = settings.autocompleteLocalNativeEngine
         debounceSlider?.value = settings.getDebounceThresholdMs().toInt().coerceIn(10, 1000)
         debounceValueLabel?.text = "${debounceSlider?.value ?: 0} ms"
         localPortSpinner?.value = settings.autocompleteLocalPort

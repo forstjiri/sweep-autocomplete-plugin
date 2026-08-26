@@ -23,10 +23,6 @@ class SweepSettings : PersistentStateComponent<SweepSettings> {
         // Default to true - automatically disable conflicting autocomplete plugins on first run
         private const val DEFAULT_DISABLE_CONFLICTING_PLUGINS = true
 
-        const val MODEL_05B = "0.5B"
-        const val MODEL_15B = "1.5B"
-        const val MODEL_CUSTOM = "Custom"
-
         fun getInstance(): SweepSettings = ApplicationManager.getApplication().getService(SweepSettings::class.java)
     }
 
@@ -89,27 +85,14 @@ class SweepSettings : PersistentStateComponent<SweepSettings> {
         }
 
     /**
-     * Local autocomplete server port. The plugin runs `sweep-autocomplete` on 127.0.0.1:<this>.
+     * Local autocomplete server port. The plugin runs `llama-server` on 127.0.0.1:<this>.
      */
     var autocompleteLocalPort: Int = 8081
-
-    var autocompleteModel: String = MODEL_05B
-
-    /**
-     * Use the native engine: build NES prompts in-process and call llama-server
-     * directly. Falls back to the bundled Python server when llama-server is
-     * not found on PATH.
-     */
-    var autocompleteLocalNativeEngine: Boolean = true
 
     /**
      * Model id used by the native engine (see NesModelConfig).
      */
     var autocompleteLocalModel: String = "sweep-0.5B"
-
-    var customModelRepo: String = ""
-
-    var customModelFilename: String = ""
 
     /**
      * File-name patterns (globs) excluded from autocomplete suggestions.

@@ -29,14 +29,6 @@ class LocalAutocompleteServerManager : Disposable {
         private const val HEALTH_CHECK_INTERVAL_MS = 10_000L
         private const val TERMINAL_START_COOLDOWN_MS = 30_000L
         private const val TERMINAL_TAB_NAME = "Vulcan Sweep Server"
-        private const val LLAMA_CPP_VULKAN_INDEX = "https://abetlen.github.io/llama-cpp-python/whl/vulkan"
-        private const val SERVER_WHEEL_RELEASE_URL =
-            "https://github.com/forstjiri/sweep-autocomplete/releases/download/v0.1.3/sweep_autocomplete-0.1.3-py3-none-any.whl"
-        private const val BUNDLED_SERVER_WHEEL_NAME = "sweep_autocomplete-0.1.3-py3-none-any.whl"
-        private const val DEFAULT_MODEL_REPO = "sweepai/sweep-next-edit-0.5B"
-        private const val DEFAULT_MODEL_FILENAME = "sweep-next-edit-0.5b.q8_0.gguf"
-        private const val MODEL_15B_REPO = "sweepai/sweep-next-edit-1.5B"
-        private const val MODEL_15B_FILENAME = "sweep-next-edit-1.5b.q8_0.v2.gguf"
 
         fun getInstance(): LocalAutocompleteServerManager =
             ApplicationManager.getApplication().getService(LocalAutocompleteServerManager::class.java)
@@ -80,20 +72,6 @@ class LocalAutocompleteServerManager : Disposable {
             DEFAULT_PORT
         }
 
-    private fun getModelConfiguration(): Pair<String, String>? {
-        val settings = SweepSettings.getInstance()
-        return when (settings.autocompleteModel) {
-            SweepSettings.MODEL_05B -> DEFAULT_MODEL_REPO to DEFAULT_MODEL_FILENAME
-            SweepSettings.MODEL_15B -> MODEL_15B_REPO to MODEL_15B_FILENAME
-            SweepSettings.MODEL_CUSTOM -> {
-                val repo = settings.customModelRepo.trim()
-                val filename = settings.customModelFilename.trim()
-                if (repo.isEmpty() || filename.isEmpty()) null else repo to filename
-            }
-            else -> DEFAULT_MODEL_REPO to DEFAULT_MODEL_FILENAME
-        }
-    }
-
     fun getServerUrl(): String = "http://localhost:${getPort()}"
 
     fun ensureServerRunning(): Boolean {
@@ -125,164 +103,6 @@ class LocalAutocompleteServerManager : Disposable {
         }
 
     private val isWindows = System.getProperty("os.name").lowercase().contains("win")
-
-    private fun getPatchedServerWheel(): File? {
-        val configured = System.getenv("SWEEP_AUTOCOMPLETE_WHEEL")?.trim()?.takeIf { it.isNotEmpty() }
-        if (configured != null) return File(configured).takeIf { it.isFile }
-        val distRoot = File(System.getProperty("user.home"), "test/sweep-autocomplete")
-        val devWheel =
-            distRoot.listFiles()
-                ?.asSequence()
-                ?.filter { it.isDirectory }
-                ?.flatMap { directory ->
-                    (directory.resolve("dist").listFiles() ?: emptyArray()).asSequence()
-                }
-                ?.filter { it.isFile && it.name.startsWith("sweep_autocomplete-") && it.name.endsWith("-py3-none-any.whl") }
-                ?.maxByOrNull { it.lastModified() }
-        if (devWheel != null) return devWheel
-        return extractBundledServerWheel()
-    }
-
-    /**
-     * Copies the server wheel bundled in the plugin distribution to a per-plugin
-     * cache directory, so no code has to be downloaded at runtime. The version is
-     * part of the resource name, so each plugin release caches its own wheel.
-     */
-    private fun extractBundledServerWheel(): File? =
-        runCatching {
-            val resource = "/wheels/$BUNDLED_SERVER_WHEEL_NAME"
-            val stream = javaClass.getResourceAsStream(resource) ?: return null
-            val cacheDir =
-                File(
-                    com.intellij.openapi.application.PathManager.getPluginTempPath(),
-                    "vulcan-sweep-wheels",
-                ).apply { mkdirs() }
-            val target = cacheDir.resolve(BUNDLED_SERVER_WHEEL_NAME)
-            if (!target.isFile || target.length() == 0L) {
-                stream.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
-                logger.info("Extracted bundled server wheel to ${target.absolutePath}")
-            }
-            target.takeIf { it.isFile }
-        }.onFailure {
-            logger.warn("Failed to extract bundled server wheel: ${it.message}")
-        }.getOrNull()
-
-    private fun buildUvxCommand(uvxPath: String, port: Int): List<String> =
-        getPatchedServerWheel()?.let { wheel ->
-            logger.info("Using local sweep-autocomplete wheel: ${wheel.absolutePath}")
-            buildList {
-                add(uvxPath)
-                if (!isWindows) {
-                    add("--index")
-                    add(LLAMA_CPP_VULKAN_INDEX)
-                    add("--index-strategy")
-                    add("unsafe-best-match")
-                }
-                add("--from")
-                add(wheel.absolutePath)
-                add("sweep-autocomplete")
-                add("--gpu-profile")
-                add("auto")
-                add("--port")
-                add(port.toString())
-            }
-        } ?: if (isWindows) {
-            listOf(
-                uvxPath,
-                "--python", "3.12",
-                "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cpu",
-                "--from", SERVER_WHEEL_RELEASE_URL,
-                "sweep-autocomplete",
-                "--gpu-profile", "auto",
-                "--port", port.toString(),
-            )
-        } else {
-            listOf(
-                uvxPath,
-                "--index", LLAMA_CPP_VULKAN_INDEX,
-                "--index-strategy", "unsafe-best-match",
-                "--from", SERVER_WHEEL_RELEASE_URL,
-                "sweep-autocomplete",
-                "--gpu-profile", "auto",
-                "--port", port.toString(),
-            )
-        }
-
-    private fun resolveUvx(): String? {
-        // Load environment for PATH resolution
-        val envPath =
-            try {
-                val env = com.intellij.util.EnvironmentUtil.getEnvironmentMap()
-                if (env.isNotEmpty()) env["PATH"] else System.getenv("PATH")
-            } catch (_: Throwable) {
-                System.getenv("PATH")
-            }
-
-        val exeName = if (isWindows) "uvx.exe" else "uvx"
-
-        // Search PATH
-        if (!envPath.isNullOrEmpty()) {
-            for (dir in envPath.split(File.pathSeparatorChar)) {
-                if (dir.isEmpty()) continue
-                val cand = File(dir, exeName)
-                if (cand.isFile && cand.canExecute()) {
-                    return cand.absolutePath
-                }
-            }
-        }
-
-        // Check common locations
-        val home = System.getProperty("user.home")
-        val commonLocations =
-            listOf(
-                "$home/.local/bin/$exeName",
-                "$home/.cargo/bin/$exeName",
-            )
-        for (loc in commonLocations) {
-            val f = File(loc)
-            if (f.isFile && f.canExecute()) {
-                return f.absolutePath
-            }
-        }
-
-        return null
-    }
-
-    private fun installUv() {
-
-        try {
-            val process =
-                if (isWindows) {
-                    ProcessBuilder(
-                        "powershell",
-                        "-ExecutionPolicy",
-                        "ByPass",
-                        "-c",
-                        "irm https://astral.sh/uv/install.ps1 | iex",
-                    ).redirectErrorStream(true).start()
-                } else {
-                    ProcessBuilder(
-                        "/bin/sh",
-                        "-c",
-                        "curl -LsSf https://astral.sh/uv/install.sh | sh",
-                    ).redirectErrorStream(true).start()
-                }
-
-            val output = process.inputStream.bufferedReader().readText()
-            val exitCode = process.waitFor()
-
-            if (exitCode == 0) {
-                logger.info("Successfully installed uv")
-                showNotification("Successfully installed uv for local autocomplete.", NotificationType.INFORMATION)
-            } else {
-                logger.warn("Failed to install uv (exit code $exitCode): $output")
-                showNotification("Failed to install uv (exit code $exitCode).", NotificationType.ERROR)
-            }
-        } catch (e: Exception) {
-            logger.warn("Error installing uv: ${e.message}")
-            showNotification("Error installing uv: ${e.message}", NotificationType.ERROR)
-        }
-    }
 
     fun reportSuccess() {
         // Kept for the HTTP client lifecycle; restarts are terminal-only.
@@ -432,65 +252,39 @@ class LocalAutocompleteServerManager : Disposable {
      * Uses llama-server when native engine is enabled, otherwise uvx.
      */
     fun getServerCommand(): String? {
-        val useNativeEngine = SweepSettings.getInstance().autocompleteLocalNativeEngine
         val port = getPort()
 
-        if (useNativeEngine) {
-            val llamaPath = resolveLlamaServer()
-            if (llamaPath != null) {
-                val modelPath = resolveModelPath()
-                if (modelPath != null) {
-                    return buildLlamaServerCommand(llamaPath, modelPath, port).joinToString(" ") { arg ->
-                        if (arg.contains(" ")) "\"$arg\"" else arg
-                    }
-                }
-
-                // Model not downloaded yet — return a command that downloads first, then starts
-                val model = getSelectedModel()
-                val downloadCmd = buildModelDownloadCommand()
-                val repoDirName = model.repo.replace("/", "--")
-                val sweepCachePath = "$SWEEP_MODELS_DIR/${model.filename}"
-                val serverCmd = buildLlamaServerCommand(llamaPath, "\$MODEL_PATH", port)
-                    .joinToString(" ") { if (it.contains(" ")) "\"$it\"" else it }
-
-                // After download, find the model in either HF cache or Sweep cache
-                val findModel = "MODEL_PATH=\$(find ~/.cache/huggingface/hub/models--$repoDirName -name '${model.filename}' 2>/dev/null | head -1); " +
-                    "[ -z \"\$MODEL_PATH\" ] && MODEL_PATH=\"$sweepCachePath\""
-
-                return "$downloadCmd && $findModel && $serverCmd"
-            }
-            logger.info("llama-server not found on PATH — falling back to the bundled Python server")
+        val llamaPath = resolveLlamaServer()
+        if (llamaPath == null) {
+            showNotification(
+                "llama-server not found on PATH. Install llama.cpp (e.g. 'brew install llama.cpp', " +
+                    "a distro/conda package, or build it with -DGGML_VULKAN=ON) so 'llama-server' is available.",
+                NotificationType.ERROR,
+            )
+            return null
         }
 
-        // Fall back to uvx path
-        var uvxPath = resolveUvx()
-        if (uvxPath == null) {
-            logger.info("uvx not found, attempting to install uv")
-            installUv()
-            uvxPath = resolveUvx()
-            if (uvxPath == null) {
-                showNotification(
-                    "Failed to find uvx after installing uv. Please install uv manually: https://docs.astral.sh/uv/",
-                    NotificationType.ERROR,
-                )
-                return null
+        val modelPath = resolveModelPath()
+        if (modelPath != null) {
+            return buildLlamaServerCommand(llamaPath, modelPath, port).joinToString(" ") { arg ->
+                if (arg.contains(" ")) "\"$arg\"" else arg
             }
         }
-        val model = getModelConfiguration() ?: return null
-        val localWheel = getPatchedServerWheel()
-        val command = buildUvxCommand(uvxPath, port)
-        if (isWindows) return command.joinToString(" ") { shellQuote(it) }
-        if (localWheel != null) {
-            logger.info("Using local patched autocomplete server wheel: ${localWheel.absolutePath}")
-        } else {
-            logger.info("Using GitHub release autocomplete server wheel: $SERVER_WHEEL_RELEASE_URL")
-        }
-        return "SWEEP_GPU_PROFILE=auto " +
-            "MODEL_REPO=${shellQuote(model.first)} MODEL_FILENAME=${shellQuote(model.second)} " +
-            command.joinToString(" ") { shellQuote(it) }
+
+        // Model not downloaded yet — return a command that downloads first, then starts
+        val model = getSelectedModel()
+        val downloadCmd = buildModelDownloadCommand()
+        val repoDirName = model.repo.replace("/", "--")
+        val sweepCachePath = "$SWEEP_MODELS_DIR/${model.filename}"
+        val serverCmd = buildLlamaServerCommand(llamaPath, "\$MODEL_PATH", port)
+            .joinToString(" ") { if (it.contains(" ")) "\"$it\"" else it }
+
+        // After download, find the model in either HF cache or Sweep cache
+        val findModel = "MODEL_PATH=\$(find ~/.cache/huggingface/hub/models--$repoDirName -name '${model.filename}' 2>/dev/null | head -1); " +
+            "[ -z \"\$MODEL_PATH\" ] && MODEL_PATH=\"$sweepCachePath\""
+
+        return "$downloadCmd && $findModel && $serverCmd"
     }
-
-    private fun shellQuote(value: String): String = "'${value.replace("'", "'\\''")}'"
 
     private fun addExitStatusNotice(command: String): String =
         // Exit codes 130 (SIGINT) and 143 (SIGTERM) are intentional stops (e.g. Ctrl+C

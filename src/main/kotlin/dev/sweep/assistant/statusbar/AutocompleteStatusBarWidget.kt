@@ -126,12 +126,12 @@ class AutocompleteStatusBarWidget(
 
     override fun getTooltipText(): String =
         when {
-            !SweepSettings.getInstance().nextEditPredictionFlagOn -> "Sweep Autocomplete: Disabled - Click for options"
-            snoozeService.isAutocompleteSnooze() -> "Sweep Autocomplete: Snoozed (${snoozeService.formatRemainingTime()})"
-            isLoadingSuggestions -> "Sweep Autocomplete: Loading suggestions - Click for options"
-            isChecking -> "Sweep Autocomplete: Checking local server - Click for options"
-            isAlive -> "Sweep Autocomplete: Online - Click for options"
-            else -> "Sweep Autocomplete: Offline - Click for options"
+            !SweepSettings.getInstance().nextEditPredictionFlagOn -> "Vulcan Sweep: Disabled - Click for options"
+            snoozeService.isAutocompleteSnooze() -> "Vulcan Sweep: Snoozed (${snoozeService.formatRemainingTime()})"
+            isLoadingSuggestions -> "Vulcan Sweep: Loading suggestions - Click for options"
+            isChecking -> "Vulcan Sweep: Checking local server - Click for options"
+            isAlive -> "Vulcan Sweep: Online - Click for options"
+            else -> "Vulcan Sweep: Offline - Click for options"
         }
 
     private fun startHealthCheck() {
@@ -160,10 +160,10 @@ class AutocompleteStatusBarWidget(
         actions.add { }
 
         if (settings.nextEditPredictionFlagOn) {
-            items.add("Disable Sweep Autocomplete")
+            items.add("Disable Vulcan Sweep")
             actions.add { settings.nextEditPredictionFlagOn = false; updateWidget() }
         } else {
-            items.add("Enable Sweep Autocomplete")
+            items.add("Enable Vulcan Sweep")
             actions.add { settings.nextEditPredictionFlagOn = true; updateWidget() }
         }
 
@@ -204,7 +204,7 @@ class AutocompleteStatusBarWidget(
             ShowSettingsUtil.getInstance().showSettingsDialog(project, SweepSettingsConfigurable::class.java)
         }
 
-        val step = object : BaseListPopupStep<String>("Sweep Autocomplete", items) {
+        val step = object : BaseListPopupStep<String>("Vulcan Sweep", items) {
             override fun onChosen(selectedValue: String, finalChoice: Boolean): PopupStep<*>? {
                 if (finalChoice) {
                     val index = items.indexOf(selectedValue)

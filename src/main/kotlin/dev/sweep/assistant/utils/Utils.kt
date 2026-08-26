@@ -320,7 +320,7 @@ fun showNotification(
     project: Project,
     title: String,
     body: String,
-    notificationGroup: String = "Sweep Autocomplete",
+    notificationGroup: String = "Vulcan Sweep",
     notificationType: NotificationType = NotificationType.INFORMATION,
     icon: Icon? = null,
     action: NotificationAction? = null,

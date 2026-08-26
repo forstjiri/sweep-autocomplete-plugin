@@ -30,13 +30,13 @@
     <extensions defaultExtensionNs="com.intellij">
         <postStartupActivity implementation="dev.sweep.assistant.startup.SweepStartupActivity"/>
         <notificationGroup id="Error Notifications" displayType="BALLOON"/>
-        <notificationGroup id="Sweep Autocomplete" displayType="BALLOON"/>
+        <notificationGroup id="Vulcan Sweep" displayType="BALLOON"/>
         <applicationService serviceImplementation="dev.sweep.assistant.settings.SweepSettings"/>
         <applicationService serviceImplementation="dev.sweep.assistant.settings.SweepMetaData"/>
         <applicationService serviceImplementation="dev.sweep.assistant.services.LocalAutocompleteServerManager"/>
         <projectConfigurable
                 groupId="tools"
-                displayName="Sweep Autocomplete"
+                displayName="Vulcan Sweep"
                 id="dev.sweep.assistant.settings.SweepSettingsConfigurable"
                 instance="dev.sweep.assistant.settings.SweepSettingsConfigurable"/>
         <editorNotificationProvider implementation="dev.sweep.assistant.notifications.AutocompleteExclusionNotificationProvider"/>

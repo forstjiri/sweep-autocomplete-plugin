@@ -39,7 +39,7 @@ class SweepSettingsConfigurable(
         SweepSettings.MODEL_CUSTOM,
     )
 
-    override fun getDisplayName(): String = "Sweep Autocomplete"
+    override fun getDisplayName(): String = "Vulcan Sweep"
 
     override fun createComponent(): JComponent {
         val panel = JPanel(BorderLayout())

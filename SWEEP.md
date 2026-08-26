@@ -1,6 +1,7 @@
 # Vulcan Sweep JetBrains Plugin
 
-We're building a JetBrains plugin and a copy of IntelliJ Community is in `vendor/intellij-community` for reference.
+We're building a JetBrains plugin. For IntelliJ Platform sources, see the
+upstream [JetBrains/intellij-community](https://github.com/JetBrains/intellij-community) repository.
 
 ### Build Output
 The built plugin artifacts are located in `build/distributions/`

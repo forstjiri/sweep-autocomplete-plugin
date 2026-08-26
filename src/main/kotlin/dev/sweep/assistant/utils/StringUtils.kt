@@ -404,24 +404,6 @@ private fun isGenericLine(line: String): Boolean {
         trimmed.startsWith("*")
 }
 
-fun convertPythonToKotlinIndex(
-    text: String,
-    pythonIndex: Int,
-): Int {
-    if (pythonIndex <= 0) return pythonIndex
-
-    var kotlinIndex = 0
-    var pythonPos = 0
-
-    for (char in text.codePoints().toArray()) {
-        if (pythonPos >= pythonIndex) break
-        kotlinIndex += Character.charCount(char)
-        pythonPos += 1
-    }
-
-    return kotlinIndex
-}
-
 /**
  * Truncates a string to fit within a specified token budget, preserving both the beginning and end.
  * The truncation happens in the middle with an ellipsis (...) indicating omitted content.

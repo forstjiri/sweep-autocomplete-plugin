@@ -74,22 +74,6 @@ class LocalAutocompleteServerManager : Disposable {
 
     fun getServerUrl(): String = "http://localhost:${getPort()}"
 
-    fun ensureServerRunning(): Boolean {
-        return ensureServerRunning(null)
-    }
-
-    fun ensureServerRunning(onStatus: ((String) -> Unit)?): Boolean {
-        onStatus?.invoke("Checking if server is already running...")
-        if (isServerHealthy()) {
-            onStatus?.invoke("Server is already running.")
-            return true
-        }
-        // The server is owned by the visible terminal. Never start a hidden
-        // ProcessBuilder instance from an autocomplete request.
-        onStatus?.invoke("Local autocomplete server is not available.")
-        return false
-    }
-
     fun isServerHealthy(): Boolean =
         try {
             val request = HttpRequest.newBuilder()
@@ -103,18 +87,6 @@ class LocalAutocompleteServerManager : Disposable {
         }
 
     private val isWindows = System.getProperty("os.name").lowercase().contains("win")
-
-    fun reportSuccess() {
-        // Kept for the HTTP client lifecycle; restarts are terminal-only.
-    }
-
-    fun reportFailure() {
-        logger.debug("Local autocomplete terminal server request failed")
-    }
-
-    fun restartServer() {
-        logger.info("Ignoring background server restart request; server is terminal-owned")
-    }
 
     fun restartServerInTerminal(project: Project) {
         // Send Ctrl+C first and let the poll coroutine run afterwards, so the stop
@@ -249,7 +221,7 @@ class LocalAutocompleteServerManager : Disposable {
 
     /**
      * Builds the full command string for starting the server.
-     * Uses llama-server when native engine is enabled, otherwise uvx.
+     * Builds the full llama-server command for the visible terminal.
      */
     fun getServerCommand(): String? {
         val port = getPort()
@@ -309,7 +281,7 @@ class LocalAutocompleteServerManager : Disposable {
         }
 
         // Guard against concurrent starts (IDE startup + status bar click): a second
-        // command typed into the tab would land inside the running uvx process.
+        // command typed into the tab would land inside the running llama-server process.
         val now = System.currentTimeMillis()
         if (now < terminalStartInFlightUntil) {
             logger.info("Terminal server start already in flight; skipping duplicate start")
@@ -383,11 +355,6 @@ class LocalAutocompleteServerManager : Disposable {
         }
     }
 
-    fun stopServer() {
-        // The server is intentionally owned by the visible terminal process.
-        logger.debug("Skipping server stop; terminal owns the autocomplete process")
-    }
-
     private fun showNotification(
         content: String,
         type: NotificationType,
@@ -407,7 +374,6 @@ class LocalAutocompleteServerManager : Disposable {
     }
 
     override fun dispose() {
-        stopServer()
         scope.cancel()
     }
 }

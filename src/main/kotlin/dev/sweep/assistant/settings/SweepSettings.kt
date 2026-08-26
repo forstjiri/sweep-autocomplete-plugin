@@ -8,6 +8,7 @@ import com.intellij.openapi.components.Storage
 import com.intellij.openapi.project.Project
 import com.intellij.util.messages.Topic
 import com.intellij.util.xmlb.XmlSerializerUtil
+import dev.sweep.assistant.autocomplete.edit.engine.NesModelConfig
 
 @State(
     name = "dev.sweep.jetbrains.settings.SweepSettings",
@@ -92,8 +93,7 @@ class SweepSettings : PersistentStateComponent<SweepSettings> {
     /**
      * Model id used by the native engine (see NesModelConfig).
      */
-    var autocompleteLocalModel: String = "sweep-0.5B"
-
+    var autocompleteLocalModel: String = NesModelConfig.DEFAULT_MODEL_ID
     /**
      * File-name patterns (globs) excluded from autocomplete suggestions.
      */

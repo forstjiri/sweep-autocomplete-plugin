@@ -30,7 +30,7 @@ import com.intellij.util.concurrency.annotations.RequiresBackgroundThread
 import com.intellij.util.concurrency.annotations.RequiresBlockingContext
 import com.intellij.util.concurrency.annotations.RequiresReadLockAbsence
 import dev.sweep.assistant.autocomplete.Debouncer
-import dev.sweep.assistant.services.AutocompleteIpResolverService
+import dev.sweep.assistant.services.NextEditAutocompleteClient
 import dev.sweep.assistant.services.AutocompleteSnoozeService
 import dev.sweep.assistant.services.FeatureFlagService
 import dev.sweep.assistant.services.LocalAutocompleteServerManager
@@ -1783,8 +1783,6 @@ class RecentEditsTracker(
         offset: Int,
         filePath: String,
     ) {
-        AutocompleteIpResolverService.getInstance(project).updateLastUserActionTimestamp()
-
         recentUserActions.add(
             UserAction(
                 action_type = actionType,
@@ -2014,7 +2012,7 @@ class RecentEditsTracker(
                      avoidCompletions = requestEntry.avoidCompletions,
                      autoSteering = requestEntry.autoSteering,
                      extraRetrievalChunks = requestEntry.extraRetrievalChunks,
-                )?.apply { adjustIndices(requestEntry.editorState.documentText) }
+                )
             logger.info(
                 "Autocomplete response received: request=${requestEntry.requestTime}, " +
                     "steering=${requestEntry.steering != null}, " +
@@ -2540,7 +2538,7 @@ class RecentEditsTracker(
 
             val startTime = System.currentTimeMillis()
 
-            val result = AutocompleteIpResolverService.getInstance(project).fetchNextEditAutocomplete(request)
+            val result = NextEditAutocompleteClient.getInstance(project).fetchNextEditAutocomplete(request)
 
             val wallTime = System.currentTimeMillis() - startTime
             val serverTime = result?.elapsed_time_ms ?: Long.MAX_VALUE

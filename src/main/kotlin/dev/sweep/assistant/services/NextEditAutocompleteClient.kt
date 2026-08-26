@@ -15,22 +15,14 @@ import dev.sweep.assistant.settings.SweepSettings
  * [LocalAutocompleteServerManager] in the visible terminal.
  */
 @Service(Service.Level.PROJECT)
-class AutocompleteIpResolverService(
+class NextEditAutocompleteClient(
     @Suppress("UNUSED_PARAMETER") private val project: Project,
 ) {
     companion object {
-        private val logger = Logger.getInstance(AutocompleteIpResolverService::class.java)
+        private val logger = Logger.getInstance(NextEditAutocompleteClient::class.java)
 
-        fun getInstance(project: Project): AutocompleteIpResolverService =
-            project.getService(AutocompleteIpResolverService::class.java)
-    }
-
-    /**
-     * Updates the timestamp of the last user action. Kept for API compatibility —
-     * the native engine tracks recency from the request payload itself.
-     */
-    fun updateLastUserActionTimestamp() {
-        // no-op: no remote DNS / health-check loop in local-only mode
+        fun getInstance(project: Project): NextEditAutocompleteClient =
+            project.getService(NextEditAutocompleteClient::class.java)
     }
 
     @RequiresBackgroundThread
@@ -111,7 +103,6 @@ class AutocompleteIpResolverService(
                     autocomplete_id = it.autocompleteId,
                 )
             },
-            nativeIndices = true, // indices are already JVM-native, skip Python→JVM conversion
         )
     }
 

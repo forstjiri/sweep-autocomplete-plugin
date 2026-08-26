@@ -45,8 +45,6 @@
     </extensions>
 
     <applicationListeners>
-        <listener class="dev.sweep.assistant.listener.PluginUnloadListener"
-                  topic="com.intellij.ide.plugins.DynamicPluginListener"/>
     </applicationListeners>
 
     <actions>

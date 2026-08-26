@@ -1,11 +1,6 @@
 package dev.sweep.assistant.autocomplete.edit
 
-import dev.sweep.assistant.utils.convertPythonToKotlinIndex
 import kotlinx.serialization.Serializable
-
-/** Marker base class for serialized request bodies. Kept for binary compatibility with the local server. */
-@Serializable
-open class BaseRequest
 
 const val MAX_HUNK_SIZE = 10
 const val MAX_TOKEN_COUNT = 8192
@@ -114,7 +109,7 @@ data class NextEditAutocompleteRequest(
     val editor_diagnostics: List<@Serializable EditorDiagnostic> = emptyList(),
     val steering: String? = null,
     val avoid_completions: List<String> = emptyList(),
-) : BaseRequest()
+)
 
 @Serializable
 data class NextEditAutocompletion(
@@ -124,11 +119,6 @@ data class NextEditAutocompletion(
     val confidence: Float,
     val autocomplete_id: String,
 ) {
-    fun adjustIndices(text: String) {
-        start_index = convertPythonToKotlinIndex(text, start_index)
-        end_index = convertPythonToKotlinIndex(text, end_index)
-    }
-
     fun adjustOffsets(offset: Int) {
         start_index += offset
         end_index += offset
@@ -151,15 +141,7 @@ data class NextEditAutocompleteResponse(
     val elapsed_time_ms: Long? = null,
     // this is the new completion
     var completions: List<NextEditAutocompletion>,
-    // When true, indices are already JVM-native (from native Kotlin engine) — skip Python→JVM conversion
-    @kotlinx.serialization.Transient
-    var nativeIndices: Boolean = false,
 ) {
-    fun adjustIndices(text: String) {
-        if (nativeIndices) return  // indices already in JVM string space
-        completions.forEach { it.adjustIndices(text) }
-    }
-
     fun adjustOffsets(offset: Int) {
         completions.forEach { it.adjustOffsets(offset) }
     }

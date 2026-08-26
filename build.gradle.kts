@@ -15,7 +15,7 @@ val pluginId = "dev.sweep.assistant"
 val pluginName = "Sweep Autocomplete"
 println("Building plugin: $pluginName with ID: $pluginId")
 group = "dev.sweep"
-version = "1.29.5"
+version = "1.29.8"
 
 repositories {
     mavenCentral()

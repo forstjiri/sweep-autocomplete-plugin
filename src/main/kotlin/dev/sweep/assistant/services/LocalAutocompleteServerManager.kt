@@ -31,7 +31,7 @@ class LocalAutocompleteServerManager : Disposable {
         private const val TERMINAL_TAB_NAME = "Sweep Autocomplete Server"
         private const val LLAMA_CPP_VULKAN_INDEX = "https://abetlen.github.io/llama-cpp-python/whl/vulkan"
         private const val SERVER_WHEEL_RELEASE_URL =
-            "https://github.com/forstjiri/sweep-autocomplete/releases/download/v0.1.2/sweep_autocomplete-0.1.2-py3-none-any.whl"
+            "https://github.com/forstjiri/sweep-autocomplete/releases/download/v0.1.3/sweep_autocomplete-0.1.3-py3-none-any.whl"
         private const val DEFAULT_MODEL_REPO = "sweepai/sweep-next-edit-0.5B"
         private const val DEFAULT_MODEL_FILENAME = "sweep-next-edit-0.5b.q8_0.gguf"
         private const val MODEL_15B_REPO = "sweepai/sweep-next-edit-1.5B"

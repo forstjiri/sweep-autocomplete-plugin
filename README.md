@@ -37,7 +37,7 @@ developers can override it with a wheel under
 
 The patched server is published at
 https://github.com/forstjiri/sweep-autocomplete. The plugin downloads the
-pinned `v0.1.2` wheel from that repository when no local development wheel is
+pinned `v0.1.3` wheel from that repository when no local development wheel is
 available.
 
 The server runs exclusively in the visible PhpStorm/IntelliJ terminal. The

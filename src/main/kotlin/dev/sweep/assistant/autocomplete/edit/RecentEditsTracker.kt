@@ -2095,22 +2095,13 @@ class RecentEditsTracker(
                                         "Skipping duplicate steered autocomplete response: " +
                                             "request=${request.requestTime}, completion=${firstResponse.completion.replace("\n", "\\n").take(300)}",
                                     )
-                                    if (steeringAttempt < steeringPrompts.size) {
-                                        val previousCompletion = lastSteeredCompletion
-                                            ?.replace("\n", "\\n")
-                                            ?.take(500)
-                                        val retrySteering = steeringPrompts[steeringAttempt] +
-                                            (previousCompletion?.let {
-                                                " Do not produce this previous completion or a trivial variation: $it"
-                                            } ?: "")
-                                        processLatestEdit(
-                                            steering = retrySteering,
-                                        )
-                                        steeringAttempt++
-                                    } else {
-                                        logger.info("Stopping duplicate steering retries after ${steeringPrompts.size} attempts")
-                                        showNextCachedCompletion()
-                                    }
+                                    // The server already retries steered duplicates with a
+                                    // temperature ladder against avoided completions; plugin-side
+                                    // re-prompting returned the same completion every time in
+                                    // practice, so cycle the cached suggestions instead of
+                                    // spending seconds of GPU time on more retries.
+                                    logger.info("Stopping duplicate steering retries (server temperature ladder exhausted)")
+                                    showNextCachedCompletion()
                                     return@invokeLater
                                 }
                                 if (responseToShow != null) {

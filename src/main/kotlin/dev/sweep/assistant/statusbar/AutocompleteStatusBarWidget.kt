@@ -11,6 +11,7 @@ import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.wm.StatusBarWidget
 import com.intellij.openapi.wm.WindowManager
+import com.intellij.ui.AnimatedIcon
 import com.intellij.util.Consumer
 import dev.sweep.assistant.services.AutocompleteSnoozeService
 import dev.sweep.assistant.services.LocalAutocompleteServerManager
@@ -44,6 +45,14 @@ class AutocompleteStatusBarWidget(
     private var isAlive = false
     @Volatile
     private var isChecking = false
+    @Volatile
+    private var isLoadingSuggestions = false
+    private val spinnerIcon = AnimatedIcon.Default()
+    private val removeLoadingListener =
+        AutocompleteLoadingNotifier.addListener { loading ->
+            isLoadingSuggestions = loading
+            updateWidget()
+        }
     private val snoozeService = AutocompleteSnoozeService.getInstance(project)
     private val snoozeStateListener = { updateWidget() }
     private val clickHandler = Consumer<MouseEvent> { event -> showPopupMenu(event) }
@@ -63,11 +72,18 @@ class AutocompleteStatusBarWidget(
     }
 
     override fun dispose() {
+        removeLoadingListener()
         snoozeService.removeSnoozeStateListener(snoozeStateListener)
         scope.cancel()
     }
 
     override fun getIcon(): Icon {
+        // While suggestions are loading, replace the static icon with the platform
+        // spinner. The animated icon repaints the status bar by itself.
+        val enabled =
+            SweepSettings.getInstance().nextEditPredictionFlagOn && !snoozeService.isAutocompleteSnooze()
+        if (isLoadingSuggestions && enabled) return spinnerIcon
+
         val base = IconLoader.getIcon("/icons/sweep16x16.svg", javaClass)
         return object : Icon {
             override fun paintIcon(
@@ -112,6 +128,7 @@ class AutocompleteStatusBarWidget(
         when {
             !SweepSettings.getInstance().nextEditPredictionFlagOn -> "Sweep Autocomplete: Disabled - Click for options"
             snoozeService.isAutocompleteSnooze() -> "Sweep Autocomplete: Snoozed (${snoozeService.formatRemainingTime()})"
+            isLoadingSuggestions -> "Sweep Autocomplete: Loading suggestions - Click for options"
             isChecking -> "Sweep Autocomplete: Checking local server - Click for options"
             isAlive -> "Sweep Autocomplete: Online - Click for options"
             else -> "Sweep Autocomplete: Offline - Click for options"

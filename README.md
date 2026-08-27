@@ -7,6 +7,16 @@ This project is a fork of [Sweep Autocomplete](https://blog.sweep.dev/posts/oss-
 It provides a local alternative to JetBrains Next Edit Suggestions, using the
 Sweep 0.5B or 1.5B model to predict and apply edits anywhere in the file.
 
+## See It In Action
+
+![Vulcan Sweep next-edit autocomplete](promo/img.png)
+
+<video controls width="683">
+  <source src="https://raw.githubusercontent.com/forstjiri/sweep-autocomplete-plugin/main/promo/next.mp4" type="video/mp4">
+  <a href="https://github.com/forstjiri/sweep-autocomplete-plugin/blob/main/promo/next.mp4">Watch the promo video</a>
+</video>
+
+
 The plugin supports:
 
 - Next-edit suggestions at the current cursor position

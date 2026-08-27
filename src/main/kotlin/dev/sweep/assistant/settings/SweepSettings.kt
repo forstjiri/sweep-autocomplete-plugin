@@ -105,7 +105,7 @@ class SweepSettings : PersistentStateComponent<SweepSettings> {
     var autocompleteExclusionPatterns: MutableSet<String> = mutableSetOf(".env")
 
     /**
-     * Suppresses the "Sweep autocomplete is disabled for this file type" banner once dismissed.
+     * Suppresses the "Vulcan Sweep is disabled for this file type" banner once dismissed.
      */
     var hideAutocompleteExclusionBanner: Boolean = false
 

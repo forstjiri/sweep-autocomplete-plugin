@@ -63,7 +63,7 @@ class LocalAutocompleteServerManager : Disposable {
                 if (lastKnownHealthy && !healthy) {
                     logger.warn("Local autocomplete terminal server became unhealthy")
                     showNotification(
-                        "Local autocomplete server stopped. Check the Sweep Autocomplete Server terminal tab.",
+                        "Local autocomplete server stopped. Check the Vulcan Sweep Server terminal tab.",
                         NotificationType.WARNING,
                     )
                 }
@@ -362,10 +362,10 @@ class LocalAutocompleteServerManager : Disposable {
         if (isWindows) {
             // The IDE terminal defaults to PowerShell on Windows.
             "$command; if (\$LASTEXITCODE -ne 0 -and \$LASTEXITCODE -ne 130 -and \$LASTEXITCODE -ne 143) " +
-                "{ Write-Host \"[Sweep Autocomplete] Server exited with code \$LASTEXITCODE. Check the terminal output.\" }"
+                "{ Write-Host \"[Vulcan Sweep] Server exited with code \$LASTEXITCODE. Check the terminal output.\" }"
         } else {
             "$command; exit_code=\$?; if [ \"\$exit_code\" -ne 0 ] && [ \"\$exit_code\" -ne 130 ] && [ \"\$exit_code\" -ne 143 ]; " +
-                "then printf '\\n[Sweep Autocomplete] Server exited with code %s. Check Vulkan/AMDGPU logs if this was a GPU crash.\\n' \"\$exit_code\"; fi"
+                "then printf '\\n[Vulcan Sweep] Server exited with code %s. Check Vulkan/AMDGPU logs if this was a GPU crash.\\n' \"\$exit_code\"; fi"
         }
 
     /**
@@ -467,9 +467,9 @@ class LocalAutocompleteServerManager : Disposable {
                 val notificationGroup =
                     NotificationGroupManager
                         .getInstance()
-                        .getNotificationGroup("Sweep Autocomplete")
+                        .getNotificationGroup("Vulcan Sweep")
 
-                notificationGroup?.createNotification("Sweep Autocomplete", content, type)?.notify(null)
+                notificationGroup?.createNotification("Vulcan Sweep", content, type)?.notify(null)
             } catch (e: Exception) {
                 logger.warn("Failed to show notification: ${e.message}")
             }

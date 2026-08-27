@@ -74,8 +74,8 @@ object SweepConstants {
     const val STOP_STREAM_FIRST_KEY = "⇧"
     const val BACK_SPACE_KEY = "⌫"
     const val ENTER_KEY = "↵"
-    const val PLUGIN_NAME = "Sweep AI"
-    val TOOLWINDOW_NAME = "Sweep AI"
+    const val PLUGIN_NAME = "Vulcan Sweep"
+    val TOOLWINDOW_NAME = "Vulcan Sweep"
     const val PHI = 0.6180339887498949 // Golden ratio
     const val NEW_CHAT = "New Chat"
     const val FILE_PLACEHOLDER = "<file_name>"
@@ -567,8 +567,8 @@ object SweepConstants {
     const val CHAT_HISTORY_CHATS_SENT = 20 // show chat history - mid-level feature
 
     // Gateway onboarding constants
-    const val GATEWAY_CLIENT_ONBOARDING_TITLE = "Sweep AI - Incorrect Plugin for Gateway Client"
-    const val GATEWAY_HOST_ONBOARDING_TITLE = "Sweep AI - Incorrect Plugin for Gateway Host"
+    const val GATEWAY_CLIENT_ONBOARDING_TITLE = "Vulcan Sweep - Incorrect Plugin for Gateway Client"
+    const val GATEWAY_HOST_ONBOARDING_TITLE = "Vulcan Sweep - Incorrect Plugin for Gateway Host"
 
     val GATEWAY_CLIENT_ONBOARDING_MESSAGE =
         """

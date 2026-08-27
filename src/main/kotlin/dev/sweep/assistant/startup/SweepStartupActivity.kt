@@ -105,9 +105,9 @@ class SweepStartupActivity : ProjectActivity {
             project = project,
             title = "Conflicting Autocomplete Plugins Detected",
             body = "Sweep detected potentially conflicting plugins: $pluginNames. " +
-                "These plugins may interfere with Sweep autocomplete. " +
+                "These plugins may interfere with Vulcan Sweep. " +
                 "You can manage them in Settings > Plugins.",
-            notificationGroup = "Sweep Autocomplete",
+            notificationGroup = "Vulcan Sweep",
             notificationType = NotificationType.WARNING,
             action = object : NotificationAction("Disable autocomplete for these plugins") {
                 override fun actionPerformed(

@@ -43,7 +43,7 @@ class AutocompleteExclusionNotificationProvider : EditorNotificationProvider {
         @Suppress("UNUSED_PARAMETER") file: VirtualFile,
     ): EditorNotificationPanel {
         val panel = EditorNotificationPanel(EditorNotificationPanel.Status.Info)
-        panel.text = "Sweep autocomplete is disabled for this file type."
+        panel.text = "Vulcan Sweep is disabled for this file type."
 
         panel.createActionLabel("Don't Show Again") {
             SweepSettings.getInstance().hideAutocompleteExclusionBanner = true

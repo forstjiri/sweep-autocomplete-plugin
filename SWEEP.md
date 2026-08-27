@@ -1,4 +1,4 @@
-# Sweep AI JetBrains Plugin
+# Vulcan Sweep JetBrains Plugin
 
 We're building a JetBrains plugin and a copy of IntelliJ Community is in `vendor/intellij-community` for reference.
 

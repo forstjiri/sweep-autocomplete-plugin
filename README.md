@@ -35,13 +35,24 @@ Vulkan are one tested configuration.
 Vulcan Sweep needs two things on your machine:
 
 1. **`llama-server`** — the inference engine from [llama.cpp](https://github.com/ggml-org/llama.cpp).
-   Install it once and make sure it is on your `PATH`:
+   When it is not found, the plugin shows a notification with an
+   **Install llama-server** button that downloads the official Vulkan build
+   into `~/.cache/sweep/llama.cpp` and starts the server for you. Prefer a
+   system-wide install? Any of these work too:
    - macOS: `brew install llama.cpp`
    - Linux: a package (e.g. `conda install -c conda-forge llama.cpp`) or build it
      with Vulkan for AMD GPUs: `cmake -B build -DGGML_VULKAN=ON && cmake --build build`
      (binary at `build/bin/llama-server`)
    - Windows: a [llama.cpp release](https://github.com/ggml-org/llama.cpp/releases)
      build with `llama-server.exe` on your `PATH`
+   - Custom location: point the `LLAMA_SERVER_PATH` environment variable at the binary
+
+   **Tip:** for the fastest suggestions use a current llama.cpp build. n-gram
+   speculative decoding (roughly a third faster) is enabled automatically
+   whenever the installed llama-server supports it — the plugin detects it on
+   start and offers a copyable download command for the official builds when
+   your version is older. The downloaded build lives in
+   `~/.cache/sweep/llama.cpp` and is preferred over system installs.
 2. **The Sweep model GGUF** (~0.5–4 GB depending on the selected model) —
    downloaded once on first start from
    [Hugging Face](https://huggingface.co/sweepai) and stored under

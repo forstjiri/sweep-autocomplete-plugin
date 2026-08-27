@@ -1,7 +1,10 @@
 package dev.sweep.assistant.services
 
+import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.ide.CopyPasteManager
+import java.awt.datatransfer.StringSelection
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
@@ -28,6 +31,7 @@ class LocalAutocompleteServerManager : Disposable {
         private const val HEALTH_CHECK_TIMEOUT_MS = 3000L
         private const val HEALTH_CHECK_INTERVAL_MS = 10_000L
         private const val TERMINAL_START_COOLDOWN_MS = 30_000L
+        private const val MISSING_LLAMA_NOTICE_COOLDOWN_MS = 60_000L
         private const val TERMINAL_TAB_NAME = "Vulcan Sweep Server"
 
         fun getInstance(): LocalAutocompleteServerManager =
@@ -124,7 +128,32 @@ class LocalAutocompleteServerManager : Disposable {
     /**
      * Resolve llama-server binary on PATH.
      */
+    private val isMac = System.getProperty("os.name").lowercase().contains("mac")
+
+    @Volatile
+    private var lastMissingLlamaNoticeAt = 0L
+
+    /** Directory where the plugin installs the llama.cpp binaries it manages. */
+    private fun llamaCppManagedDir(): File = File(System.getProperty("user.home"), ".cache/sweep/llama.cpp")
+
+    private fun llamaServerExeName(): String = if (isWindows) "llama-server.exe" else "llama-server"
+
     private fun resolveLlamaServer(): String? {
+        val exeName = llamaServerExeName()
+
+        // Explicit override wins
+        System.getenv("LLAMA_SERVER_PATH")?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            val f = File(it)
+            if (f.isFile) return f.absolutePath
+        }
+
+        // Plugin-managed install (~/.cache/sweep/llama.cpp), also found one level deep
+        llamaCppManagedDir().takeIf { it.isDirectory }?.let { dir ->
+            dir.walkTopDown().maxDepth(2)
+                .firstOrNull { it.isFile && it.name == exeName }
+                ?.let { return it.absolutePath }
+        }
+
         val envPath = try {
             val env = com.intellij.util.EnvironmentUtil.getEnvironmentMap()
             if (env.isNotEmpty()) env["PATH"] else System.getenv("PATH")
@@ -132,7 +161,6 @@ class LocalAutocompleteServerManager : Disposable {
             System.getenv("PATH")
         }
 
-        val exeName = if (isWindows) "llama-server.exe" else "llama-server"
         if (!envPath.isNullOrEmpty()) {
             for (dir in envPath.split(File.pathSeparatorChar)) {
                 if (dir.isEmpty()) continue
@@ -205,37 +233,83 @@ class LocalAutocompleteServerManager : Disposable {
     /**
      * Build the llama-server command with speculative decoding flags.
      */
+    /**
+     * Builds the llama-server command line. Flags are kept version-robust:
+     * - `-ngl 999` offloads all layers (llama.cpp clamps to the layer count;
+     *   `-ngl -1` is not understood by older builds).
+     * - No `--flash-attn` value: older builds take a boolean flag, newer ones
+     *   default to `auto` — omitting it is safe on both.
+     * - n-gram speculative decoding flags depend on the build generation
+     *   (probed once via --help):
+     *     current builds   → `--spec-type ngram-mod` (defaults are 24/48/64)
+     *     mid-2026 builds  → old tuning flag names (`--spec-ngram-size-n`, …)
+     *     older builds     → not supported, plain flags only
+     */
     private fun buildLlamaServerCommand(llamaServerPath: String, modelPath: String, port: Int): List<String> {
-        return listOf(
-            llamaServerPath,
-            "-m", modelPath,
-            "--port", port.toString(),
-            "-ngl", "-1",
-            "--flash-attn", "auto",
-            "--spec-type", "ngram-mod",
-            "--spec-ngram-size-n", "24",
-            "--draft-min", "48",
-            "--draft-max", "64",
-        )
+        val args =
+            mutableListOf(
+                llamaServerPath,
+                "-m", modelPath,
+                "--port", port.toString(),
+                "-ngl", "999",
+            )
+        val help = llamaHelpText(llamaServerPath)
+        when {
+            help.contains("--spec-ngram-mod-n-match") -> {
+                args += listOf("--spec-type", "ngram-mod")
+            }
+            help.contains("--spec-ngram-size-n") -> {
+                args += listOf(
+                    "--spec-type", "ngram-mod",
+                    "--spec-ngram-size-n", "24",
+                    "--draft-min", "48",
+                    "--draft-max", "64",
+                )
+            }
+            else -> {
+                logger.info("llama-server without n-gram speculative decoding — using plain flags")
+                notifyFasterBuildAvailable(llamaServerPath)
+            }
+        }
+        return args
+    }
+
+    @Volatile
+    private var llamaHelpCache: Pair<String, String>? = null
+
+    /** Probes `llama-server --help` once per binary path and caches the output. */
+    private fun llamaHelpText(llamaServerPath: String): String {
+        llamaHelpCache?.takeIf { it.first == llamaServerPath }?.let { return it.second }
+        val help =
+            runCatching {
+                val process =
+                    ProcessBuilder(llamaServerPath, "--help")
+                        .redirectErrorStream(true)
+                        .start()
+                val output = process.inputStream.bufferedReader().readText()
+                process.waitFor()
+                output
+            }.getOrDefault("")
+        llamaHelpCache = llamaServerPath to help
+        return help
     }
 
     /**
-     * Builds the full command string for starting the server.
      * Builds the full llama-server command for the visible terminal.
      */
-    fun getServerCommand(): String? {
-        val port = getPort()
-
+    fun getServerCommand(project: Project? = null): String? {
         val llamaPath = resolveLlamaServer()
         if (llamaPath == null) {
-            showNotification(
-                "llama-server not found on PATH. Install llama.cpp (e.g. 'brew install llama.cpp', " +
-                    "a distro/conda package, or build it with -DGGML_VULKAN=ON) so 'llama-server' is available.",
-                NotificationType.ERROR,
-            )
+            notifyLlamaServerMissing(project)
             return null
         }
+        return buildServerCommand(llamaPath, getPort())
+    }
 
+    private fun buildServerCommand(
+        llamaPath: String,
+        port: Int,
+    ): String {
         val modelPath = resolveModelPath()
         if (modelPath != null) {
             return buildLlamaServerCommand(llamaPath, modelPath, port).joinToString(" ") { arg ->
@@ -271,6 +345,121 @@ class LocalAutocompleteServerManager : Disposable {
         }
 
     /**
+     * Notifies the user that llama-server is missing and offers a one-click
+     * install of the official llama.cpp Vulkan build into the plugin-managed
+     * directory, followed by an immediate server start.
+     */
+    private fun notifyLlamaServerMissing(project: Project?) {
+        val now = System.currentTimeMillis()
+        if (now - lastMissingLlamaNoticeAt < MISSING_LLAMA_NOTICE_COOLDOWN_MS) return
+        lastMissingLlamaNoticeAt = now
+
+        ApplicationManager.getApplication().invokeLater {
+            try {
+                val notification =
+                    NotificationGroupManager
+                        .getInstance()
+                        .getNotificationGroup("Vulcan Sweep")
+                        .createNotification(
+                            "Vulcan Sweep",
+                            "llama-server was not found on PATH. Install llama.cpp — use the commands below " +
+                                "(the official <code>bin-ubuntu-*</code> builds run on any glibc Linux distribution, " +
+                                "Fedora included). Afterwards start the server from the Vulcan Sweep status bar menu.",
+                            NotificationType.ERROR,
+                        )
+                notification.addAction(
+                    NotificationAction.createSimpleExpiring("Copy brew command") {
+                        CopyPasteManager
+                            .getInstance()
+                            .setContents(StringSelection("brew install llama.cpp"))
+                    },
+                )
+                if (!isWindows) {
+                    tarballDownloadCommand()?.let { cmd ->
+                        notification.addAction(
+                            NotificationAction.createSimpleExpiring("Copy download command") {
+                                CopyPasteManager
+                                    .getInstance()
+                                    .setContents(StringSelection(cmd))
+                            },
+                        )
+                    }
+                }
+                notification.notify(null)
+            } catch (e: Exception) {
+                logger.warn("Failed to show llama-server notification: ${e.message}")
+            }
+        }
+    }
+
+    /** One-time hint when the resolved llama-server lacks n-gram speculative decoding. */
+    @Volatile
+    private var speedHintShown = false
+
+    private fun notifyFasterBuildAvailable(llamaServerPath: String) {
+        if (speedHintShown) return
+        speedHintShown = true
+
+        ApplicationManager.getApplication().invokeLater {
+            try {
+                val notification =
+                    NotificationGroupManager
+                        .getInstance()
+                        .getNotificationGroup("Vulcan Sweep")
+                        .createNotification(
+                            "Vulcan Sweep",
+                            "llama-server at <code>$llamaServerPath</code> does not support n-gram " +
+                                "speculative decoding, which speeds up suggestions by roughly a third on " +
+                                "current builds. A newer llama.cpp build can be installed next to it " +
+                                "(the plugin prefers <code>~/.cache/sweep/llama.cpp</code>).",
+                            NotificationType.INFORMATION,
+                        )
+                if (!isWindows) {
+                    tarballDownloadCommand()?.let { cmd ->
+                        notification.addAction(
+                            NotificationAction.createSimpleExpiring("Copy faster build command") {
+                                CopyPasteManager
+                                    .getInstance()
+                                    .setContents(StringSelection(cmd))
+                            },
+                        )
+                    }
+                }
+                notification.notify(null)
+            } catch (e: Exception) {
+                logger.warn("Failed to show faster-build notification: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * One-liner that installs the official llama.cpp Vulkan build into the
+     * plugin-managed directory. The <code>bin-ubuntu-*</code> tarballs are
+     * distro-independent and run on any glibc-based Linux distribution; macOS
+     * has its own build. Returns null on platforms without an official build.
+     */
+    private fun tarballDownloadCommand(): String? {
+        val arch = System.getProperty("os.arch").lowercase()
+        val pattern =
+            when {
+                isMac ->
+                    if (arch.contains("aarch64") || arch.contains("arm")) "bin-macos-arm64\\.tar\\.gz"
+                    else "bin-macos-x64\\.tar\\.gz"
+                arch.contains("aarch64") || arch.contains("arm") -> "bin-ubuntu-vulkan-arm64\\.tar\\.gz"
+                else -> "bin-ubuntu-vulkan-x64\\.tar\\.gz"
+            }
+        val dir = llamaCppManagedDir().absolutePath
+        return "mkdir -p '$dir'\n" +
+            "curl -sL \"\$(curl -s 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10' " +
+            "| grep -oE 'https://[^\"]+$pattern' | head -1)\" | tar -xz -C '$dir'\n"
+    }
+
+    /**
+     * Shell command that installs the llama.cpp release build (llama-server) into
+     * the plugin-managed directory. Returns null when the platform is not supported.
+     */
+
+    /**
      * Starts the local autocomplete server in a visible IDE terminal tab.
      * If the server is already healthy, does nothing.
      */
@@ -289,12 +478,12 @@ class LocalAutocompleteServerManager : Disposable {
         }
         terminalStartInFlightUntil = now + TERMINAL_START_COOLDOWN_MS
 
-        val command = getServerCommand()?.let(::addExitStatusNotice) ?: return
+        val command = getServerCommand(project)?.let(::addExitStatusNotice) ?: return
 
         if (!firstStartNoticeShown) {
             firstStartNoticeShown = true
             showNotification(
-                "Starting the local autocomplete server in the Terminal. The first start downloads uv, the server, and the selected model.",
+                "Starting the local autocomplete server in the Terminal. The first start downloads llama-server (if missing) and the selected model.",
                 NotificationType.INFORMATION,
             )
         }
@@ -303,6 +492,9 @@ class LocalAutocompleteServerManager : Disposable {
             try {
                 val toolWindow = ToolWindowManager.getInstance(project)
                     .getToolWindow(TerminalToolWindowFactory.TOOL_WINDOW_ID) ?: return@invokeLater
+
+                // Make the terminal visible so the user can watch the install/start output
+                toolWindow.show()
 
                 // Reuse existing terminal tab if one exists, otherwise create a new one
                 val existingContent = toolWindow.contentManager.findContent(TERMINAL_TAB_NAME)

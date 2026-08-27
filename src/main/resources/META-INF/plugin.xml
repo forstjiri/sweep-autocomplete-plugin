@@ -1,21 +1,25 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
     <!-- Unique identifier of the plugin. It should be FQN. It cannot be changed between the plugin versions. -->
-    <id>dev.sweep.assistant</id>
+    <id>dev.forstjiri.vulcansweep</id>
 
     <!-- Public plugin name should be written in Title Case.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-name -->
-    <name>Sweep Autocomplete</name>
+    <name>Vulcan Sweep</name>
 
     <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
     <vendor email="forstjiri@gmail.com" url="https://github.com/forstjiri/sweep-autocomplete-plugin">forstjiri</vendor>
 
     <description><![CDATA[
-    Local-only inline next-edit autocomplete for JetBrains IDEs. Inference runs on your machine using the Sweep model. The plugin downloads the server and model on first use and starts the server in the built-in terminal. No source code is sent to a hosted autocomplete service.
+    <b>Vulcan Sweep is in beta.</b>
     <br><br>
-    <b>First run:</b> allow a few minutes for uv, the server, and the selected model to download. GPU acceleration is automatic; CPU fallback is available.
+    Local, private next-edit autocomplete for JetBrains IDEs. Suggestions appear as you type and can also predict your next edit anywhere in the open file.
     <br><br>
-    <a href="https://github.com/forstjiri/sweep-autocomplete-plugin#quick-start">Quick start and troubleshooting</a>
+    Everything runs on your machine — your code never leaves it. Works offline, no account needed.
+    <br><br>
+    Built on the open-source <a href="https://blog.sweep.dev/posts/oss-next-edit">Sweep next-edit model</a> (a fork of Sweep Autocomplete).
+    <br><br>
+    <a href="https://github.com/forstjiri/sweep-autocomplete-plugin#requirements">Requirements and troubleshooting</a>
     ]]></description>
 
     <!-- Product and plugin compatibility requirements.

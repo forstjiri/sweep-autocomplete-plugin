@@ -1396,8 +1396,6 @@ class RecentEditsTracker(
                 }
             }
 
-            AutocompleteMetricsTracker.getInstance(project).trackSuggestionAccepted(suggestion = it)
-
             if (it is AutocompleteSuggestion.JumpToEditSuggestion) {
                 showAutocomplete(it.originalCompletion, isShowingPostJumpSuggestion = true)
             } else {
@@ -2234,30 +2232,6 @@ class RecentEditsTracker(
                                     showNextCachedCompletion()
                                     return@invokeLater
                                 }
-                                // No suggestion was generated - track file contents for 1% of cases
-                                val sampleRatio =
-                                    FeatureFlagService
-                                        .getInstance(
-                                            project,
-                                        ).getNumericFeatureFlag("autocomplete-edit-tracking-not-shown-ratio", 10)
-                                        .toDouble() /
-                                        1_000
-                                if (kotlin.random.Random.nextDouble() < sampleRatio) {
-                                    try {
-                                        val document = getCurrentEditor()?.document ?: return@run
-                                        val rangeMarker = null
-
-                                        AutocompleteMetricsTracker.getInstance(project).trackFileContentsAfterDelay(
-                                            document = document,
-                                            rangeMarker = rangeMarker,
-                                            suggestionType = "NOT_SHOWN",
-                                            additionsAndDeletions = Pair(0, 0),
-                                            autocompleteId = response.autocomplete_id,
-                                        )
-                                    } catch (e: Exception) {
-                                        println("Error tracking file contents after delay (no suggestion): ${e.message}")
-                                    }
-                                }
                             }
                         }
                     } catch (e: Exception) {
@@ -2388,31 +2362,6 @@ class RecentEditsTracker(
                         it.show(currentEditor, isShowingPostJumpSuggestion)
 
                         it.shownTime = System.currentTimeMillis()
-                        AutocompleteMetricsTracker.getInstance(project).trackSuggestionShown(suggestion = it)
-
-                        // Start edit tracking
-                        try {
-                            val document = currentEditor.document
-                            // Create range marker around the suggestion line
-                            val suggestionLine = document.getLineNumber(it.startOffset)
-                            val lineStartOffset = document.getLineStartOffset(suggestionLine)
-                            val lineEndOffset = document.getLineEndOffset(suggestionLine)
-                            val rangeMarker =
-                                document.createRangeMarker(lineStartOffset, lineEndOffset).apply {
-                                    isGreedyToLeft = true
-                                    isGreedyToRight = true
-                                }
-
-                            AutocompleteMetricsTracker.getInstance(project).trackFileContentsAfterDelay(
-                                document = document,
-                                rangeMarker = rangeMarker,
-                                suggestionType = it.type.name,
-                                additionsAndDeletions = Pair(it.suggestionAdditions, it.suggestionDeletions),
-                                autocompleteId = it.autocomplete_id,
-                            )
-                        } catch (e: Exception) {
-                            println("Error tracking file contents after delay: ${e.message}")
-                        }
                     } else {
                         it.dispose()
                     }
@@ -2628,7 +2577,6 @@ class RecentEditsTracker(
         currentSuggestion = null
         suggestion.disposedTime = System.currentTimeMillis()
         if (suggestion.suggestionWasShownAtAll()) {
-            AutocompleteMetricsTracker.getInstance(project).trackSuggestionDisposed(suggestion)
             AutocompleteRejectionCache
                 .getInstance(project)
                 .tryAddingRejectionToCache(suggestion, autocompleteDisposeReason)
@@ -2722,8 +2670,6 @@ class RecentEditsTracker(
                 nextEntry.suggestion.show(nextEntry.suggestion.editor, isPostJumpSuggestion = false)
                 nextEntry.suggestion.shownTime = System.currentTimeMillis()
 
-                // Track metrics
-                AutocompleteMetricsTracker.getInstance(project).trackSuggestionShown(suggestion = nextEntry.suggestion)
             }
             return true
         }

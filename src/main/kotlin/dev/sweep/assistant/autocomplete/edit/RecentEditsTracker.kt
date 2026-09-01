@@ -2043,8 +2043,26 @@ class RecentEditsTracker(
             scope.launch {
                 while (isActive) {
                     try {
-                        val (request, response) = completionChannel.receive()
-                        response ?: continue
+                        val (request, received) = completionChannel.receive()
+                        // An empty engine result (all ladder attempts filtered) must still
+                        // reach the steered retry/cycle chain below — synthesize an empty
+                        // response so a shortcut press never silently disappears. Plain
+                        // typing has nothing to retry and stays a no-op.
+                        val response =
+                            received ?: if (request.steering != null) {
+                                logger.info("Empty steered engine result — entering client steering chain")
+                                NextEditAutocompleteResponse(
+                                    start_index = 0,
+                                    end_index = 0,
+                                    completion = "",
+                                    confidence = 0.0f,
+                                    autocomplete_id = "",
+                                    elapsed_time_ms = 0,
+                                    completions = emptyList(),
+                                )
+                            } else {
+                                null
+                            } ?: continue
 //                        println("Fetch jobs size: ${fetchJobs.size}")
 
                         // Do not let an older automatic response recreate an overlay

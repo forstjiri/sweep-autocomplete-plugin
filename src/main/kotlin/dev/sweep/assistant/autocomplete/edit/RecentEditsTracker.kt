@@ -2004,6 +2004,7 @@ class RecentEditsTracker(
                 fetchJobs[requestEntry.requestTime] = deferred
             }
 //            println("Sending request: ${requestEntry.id} at time ${requestEntry.requestTime}")
+            val requestContext = currentCoroutineContext()
             val response =
                 fetchNextEditAutocomplete(
                     filePath = requestEntry.editorState.filePath,
@@ -2013,7 +2014,8 @@ class RecentEditsTracker(
                      avoidCompletions = requestEntry.avoidCompletions,
                      autoSteering = requestEntry.autoSteering,
                      extraRetrievalChunks = requestEntry.extraRetrievalChunks,
-                )
+                     shouldAbort = { !requestContext.isActive },
+                 )
             logger.info(
                 "Autocomplete response received: request=${requestEntry.requestTime}, " +
                     "steering=${requestEntry.steering != null}, " +
@@ -2067,7 +2069,8 @@ class RecentEditsTracker(
 
                         // Do not let an older automatic response recreate an overlay
                         // after a newer manual request has started.
-                        if (request.requestTime != latestRequestTime) {
+                        val steeredStateIsCurrent = isSteeredRequestStateCurrent(request)
+                        if (request.requestTime != latestRequestTime && !steeredStateIsCurrent) {
                             logger.info(
                                 "Skipping stale autocomplete response before display: request=${request.requestTime}, " +
                                     "latest=$latestRequestTime",
@@ -2100,7 +2103,7 @@ class RecentEditsTracker(
                                 )
                                 request.requestTime >= maxTime
                             }
-                        if (!isLatestRequest) {
+                        if (!isLatestRequest && !steeredStateIsCurrent) {
                             val isValidGhostText = checkForGhostTextExtension(request, response)
                             if (isValidGhostText) {
                                 request.editorState = getCurrentEditorState() ?: continue
@@ -2115,7 +2118,9 @@ class RecentEditsTracker(
                             fetchJobs.clear()
                         }
                         ApplicationManager.getApplication().invokeLater {
-                            if (request.requestTime != latestRequestTime) {
+                            if (request.requestTime != latestRequestTime &&
+                                !(request.steering != null && isSteeredRequestStateCurrent(request))
+                            ) {
                                 logger.info(
                                     "Skipping stale autocomplete response: request=${request.requestTime}, " +
                                         "latest=$latestRequestTime",
@@ -2448,6 +2453,7 @@ class RecentEditsTracker(
         avoidCompletions: List<String> = emptyList(),
         autoSteering: String? = null,
         extraRetrievalChunks: List<FileChunk> = emptyList(),
+        shouldAbort: () -> Boolean = { false },
     ): NextEditAutocompleteResponse? {
         try {
             val repoName = userSpecificRepoName(project)
@@ -2560,7 +2566,8 @@ class RecentEditsTracker(
 
             val startTime = System.currentTimeMillis()
 
-            val result = NextEditAutocompleteClient.getInstance(project).fetchNextEditAutocomplete(request)
+            val result = NextEditAutocompleteClient.getInstance(project)
+                .fetchNextEditAutocomplete(request, shouldAbort)
 
             val wallTime = System.currentTimeMillis() - startTime
             val serverTime = result?.elapsed_time_ms ?: Long.MAX_VALUE
@@ -2584,6 +2591,14 @@ class RecentEditsTracker(
             )
             return null
         }
+    }
+
+    /** A repeated steering keypress is safe while the document and caret are unchanged. */
+    private fun isSteeredRequestStateCurrent(request: AutocompleteRequestEntry): Boolean {
+        if (request.steering == null) return false
+        val currentState = getCurrentEditorState() ?: return false
+        return currentState.cursorOffset == request.editorState.cursorOffset &&
+            currentState.documentText == request.editorState.documentText
     }
 
     fun clearAutocomplete(autocompleteDisposeReason: AutocompleteDisposeReason) {

@@ -26,7 +26,11 @@ class NextEditAutocompleteClient(
     }
 
     @RequiresBackgroundThread
-    fun fetchNextEditAutocomplete(request: NextEditAutocompleteRequest): NextEditAutocompleteResponse? {
+    fun fetchNextEditAutocomplete(
+        request: NextEditAutocompleteRequest,
+        shouldAbort: () -> Boolean = { false },
+    ): NextEditAutocompleteResponse? {
+        if (shouldAbort()) return null
         val serverManager = LocalAutocompleteServerManager.getInstance()
         if (!serverManager.isServerHealthy()) {
             logger.info("Local llama-server not healthy on request — starting in terminal")
@@ -84,7 +88,7 @@ class NextEditAutocompleteClient(
             avoidCompletions = request.avoid_completions,
         )
 
-        val result = engine.fetchNextEdits(nesRequest)
+        val result = engine.fetchNextEdits(nesRequest, shouldAbort)
 
         if (result.completions.isEmpty()) return null
 

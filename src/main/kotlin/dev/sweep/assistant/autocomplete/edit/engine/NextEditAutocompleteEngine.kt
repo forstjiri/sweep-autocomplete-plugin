@@ -59,7 +59,10 @@ class NextEditAutocompleteEngine(
      * Main entry point: generate next-edit suggestions for the given request.
      * Ported from Python fetch_next_edits() + _fetch_next_edits_core().
      */
-    fun fetchNextEdits(request: NesRequest): NesResponse {
+    fun fetchNextEdits(
+        request: NesRequest,
+        shouldAbort: () -> Boolean = { false },
+    ): NesResponse {
         val autocompleteId = UUID.randomUUID().toString().replace("-", "")
         val fileContents = request.fileContents
         val originalFileContents = request.originalFileContents ?: fileContents
@@ -109,6 +112,10 @@ class NextEditAutocompleteEngine(
 
         for ((roundIndex, temperature) in rounds.withIndex()) {
             for ((variantIndex, candidate) in candidates.withIndex()) {
+                if (shouldAbort()) {
+                    logger.info("NES: steering matrix aborted before variant=V${variantIndex + 1}")
+                    return emptyResponse(autocompleteId, System.currentTimeMillis() - startTime)
+                }
                 val outcome =
                     runAutocompletePass(
                         filePath = request.filePath,
@@ -138,6 +145,10 @@ class NextEditAutocompleteEngine(
                             autocompleteId,
                         )
                     is AttemptOutcome.Avoided -> lastAvoided = outcome.completions
+                    is AttemptOutcome.Aborted -> {
+                        logger.info("NES: steering matrix aborted during variant=V${variantIndex + 1}")
+                        return emptyResponse(autocompleteId, System.currentTimeMillis() - startTime)
+                    }
                     else -> {}
                 }
                 if (steered) {

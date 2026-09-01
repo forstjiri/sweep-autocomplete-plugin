@@ -26,6 +26,11 @@ class NextEditAutocompleteClient(
     }
 
     @RequiresBackgroundThread
+    fun cancelInFlightRequests() {
+        nativeEngine?.cancelInFlightRequests()
+    }
+
+    @RequiresBackgroundThread
     fun fetchNextEditAutocomplete(
         request: NextEditAutocompleteRequest,
         shouldAbort: () -> Boolean = { false },
@@ -113,6 +118,7 @@ class NextEditAutocompleteClient(
         )
     }
 
+    @Volatile
     private var nativeEngine: dev.sweep.assistant.autocomplete.edit.engine.NextEditAutocompleteEngine? = null
 
     private fun getOrCreateNativeEngine(): dev.sweep.assistant.autocomplete.edit.engine.NextEditAutocompleteEngine {

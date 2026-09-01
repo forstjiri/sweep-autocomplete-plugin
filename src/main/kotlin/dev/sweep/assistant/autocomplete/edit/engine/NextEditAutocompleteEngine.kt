@@ -56,6 +56,8 @@ class NextEditAutocompleteEngine(
         val autocompleteId: String,
     )
 
+    fun cancelInFlightRequests() = llamaClient.cancelInFlightRequests()
+
     /**
      * Main entry point: generate next-edit suggestions for the given request.
      * Ported from Python fetch_next_edits() + _fetch_next_edits_core().

@@ -104,4 +104,16 @@ class LlamaServerClientTest {
         assertFinishes(lone, "lone")
         assertEquals("ok:length", outcomes["lone"])
     }
+
+    @Test
+    fun `explicit cancellation interrupts active streaming requests`() {
+        val older = streamInBackground("older", maxOutputChars = 1_000_000)
+        older.start()
+        Thread.sleep(150)
+
+        client.cancelInFlightRequests()
+
+        assertFinishes(older, "older")
+        assertEquals("cancelled", outcomes["older"])
+    }
 }

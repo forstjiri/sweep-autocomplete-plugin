@@ -46,6 +46,25 @@ class LlamaServerClient(
 
     class RequestCancelledException : Exception("Request cancelled by newer request")
 
+    /** Interrupt every active generation before a newer request starts retrieval. */
+    fun cancelInFlightRequests() {
+        val cancellationId = requestCounter.incrementAndGet()
+        cancelRequestsBefore(cancellationId)
+    }
+
+    private fun cancelRequestsBefore(requestId: Long) {
+        val threadsToInterrupt = mutableListOf<Thread>()
+        val iterator = inFlightThreads.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (entry.key < requestId) {
+                iterator.remove()
+                threadsToInterrupt.add(entry.value)
+            }
+        }
+        threadsToInterrupt.forEach { it.interrupt() }
+    }
+
     /**
      * Generate a completion from llama-server using SSE streaming.
      *
@@ -68,17 +87,7 @@ class LlamaServerClient(
         val currentThread = Thread.currentThread()
         inFlightThreads[myId] = currentThread
         try {
-            // Cancel every older in-flight request by interrupting its thread
-            val olderThreads = mutableListOf<Thread>()
-            val iterator = inFlightThreads.entries.iterator()
-            while (iterator.hasNext()) {
-                val entry = iterator.next()
-                if (entry.key < myId) {
-                    iterator.remove()
-                    olderThreads.add(entry.value)
-                }
-            }
-            olderThreads.forEach { it.interrupt() }
+            cancelRequestsBefore(myId)
 
             if (myId != requestCounter.get()) {
                 throw RequestCancelledException()

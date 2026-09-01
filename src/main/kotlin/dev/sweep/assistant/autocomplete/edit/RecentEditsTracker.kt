@@ -2025,6 +2025,8 @@ class RecentEditsTracker(
                 // Add the new request
                 fetchJobs[requestEntry.requestTime] = FetchJob(deferred, job)
             }
+            // Free llama-server's slot before this request does any context work.
+            NextEditAutocompleteClient.getInstance(project).cancelInFlightRequests()
 //            println("Sending request: ${requestEntry.id} at time ${requestEntry.requestTime}")
             val requestContext = currentCoroutineContext()
             val response =
@@ -2466,6 +2468,7 @@ class RecentEditsTracker(
         shouldAbort: () -> Boolean = { false },
     ): NextEditAutocompleteResponse? {
         try {
+            if (shouldAbort()) return null
             val repoName = userSpecificRepoName(project)
             val originalFileContents = originalDocumentText
             if (isFileTooLarge(fileContents, project)) {
@@ -2473,7 +2476,9 @@ class RecentEditsTracker(
                 return null
             }
             val fileChunks = getRelevantFileChunks()
+            if (shouldAbort()) return null
             val otherOpenedFileChunks = getOtherOpenedFileChunks()
+            if (shouldAbort()) return null
             // ClipboardTrackingService removed with chat code; no clipboard chunks are sent.
             val clipboardChunks: List<FileChunk> = emptyList()
             val allFileChunks = fileChunks + otherOpenedFileChunks
@@ -2494,6 +2499,7 @@ class RecentEditsTracker(
                             )
                         } ?: emptyList()
                     }.getOrElse { emptyList() }
+                if (shouldAbort()) return null
 
                 // Feature flag: when enabled, use the cache for definition chunks
                 // When disabled, fetch definitions synchronously (no caching)
@@ -2507,11 +2513,13 @@ class RecentEditsTracker(
                             entityUsageSearchService.getDefinitionsBeforeCursor(editorState)
                         }.getOrElse { emptyList() }
                     }
+                if (shouldAbort()) return null
 
                 val usageChunks =
                     runCatching {
                         entityUsageSearchService.getCurrentLineEntityUsages(editorState)
                     }.getOrElse { emptyList() }
+                if (shouldAbort()) return null
 
                 // Store retrieval counts for metrics tracking
                 lastNumDefinitionsRetrieved = definitionChunks.size
@@ -2535,6 +2543,7 @@ class RecentEditsTracker(
                         )
                     }.reversed()
             }
+            if (shouldAbort()) return null
 
             val request =
                 NextEditAutocompleteRequest(

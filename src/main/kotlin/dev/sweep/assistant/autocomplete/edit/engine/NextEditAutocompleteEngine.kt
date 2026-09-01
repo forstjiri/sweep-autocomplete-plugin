@@ -1,6 +1,7 @@
 package dev.sweep.assistant.autocomplete.edit.engine
 
 import com.intellij.openapi.diagnostic.Logger
+import dev.sweep.assistant.autocomplete.edit.calculateDiff
 import dev.sweep.assistant.autocomplete.edit.engine.NesCompletionParser.AutocompleteResult
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.MAX_RETRIEVAL_CHUNKS
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.MAX_RETRIEVAL_CHUNK_SIZE_LINES
@@ -93,6 +94,23 @@ class NextEditAutocompleteEngine(
         // plain typing keeps a single chunk for speed.
         val steered = request.steering != null || request.avoidCompletions.isNotEmpty()
 
+        // An explicit "next suggestion" press with no tracked edits (fresh IDE
+        // session, cursor-only navigation) leaves the model without the "what
+        // just changed" signal — its strongest cue. The user pointed at this
+        // line, so treat the cursor line as the just-made edit. Live-verified:
+        // this yields the dedup/follow-up suggestions the shortcut promises.
+        val recentChanges =
+            if (request.recentChanges.isEmpty() && steered) {
+                synthesizeRecentChangeForCursorLine(fileContents, cursorPosition, request.filePath)
+                    .also { synthesized ->
+                        if (synthesized.isNotEmpty()) {
+                            logger.info("NES: no recent edits — synthesized cursor-line change as steering anchor")
+                        }
+                    }
+            } else {
+                request.recentChanges
+            }
+
         // Limit chunks for local model
         val fileChunks = request.fileChunks.take(1)
         val limitedRetrievalChunks =
@@ -109,7 +127,7 @@ class NextEditAutocompleteEngine(
         // pass, both greedy.
         val rounds = if (steered) NesUtils.steeringMatrixTemperatures() else listOf(0.0f)
         val candidates =
-            buildPassCandidates(request, block, cursorPosition, limitedRetrievalChunks, steered)
+            buildPassCandidates(request, recentChanges, block, cursorPosition, limitedRetrievalChunks, steered)
 
         val startTime = System.currentTimeMillis()
         var lastAvoided: List<AutocompleteResult>? = null
@@ -130,7 +148,7 @@ class NextEditAutocompleteEngine(
                         filePath = request.filePath,
                         fileContents = fileContents,
                         originalFileContents = originalFileContents,
-                        recentChanges = request.recentChanges,
+                        recentChanges = recentChanges,
                         cursorPosition = candidate.cursorPosition,
                         codeBlock = candidate.codeBlock,
                         blockStartIndex = candidate.blockStartIndex,
@@ -199,6 +217,7 @@ class NextEditAutocompleteEngine(
      */
     private fun buildPassCandidates(
         request: NesRequest,
+        recentChanges: String,
         cursorBlock: NesPromptBuilder.BlockAtCursor,
         cursorPosition: Int,
         limitedRetrievalChunks: List<NesPromptBuilder.FileChunkData>,
@@ -215,14 +234,14 @@ class NextEditAutocompleteEngine(
                 ),
             )
 
-        if (request.recentChanges.isEmpty()) return candidates
+        if (recentChanges.isEmpty()) return candidates
 
         val maxRetrievalVariants = if (steered) 2 else 1
         val retrievalVariants =
             NesRetrieval
                 .findCandidateBlocks(
                     request.fileContents,
-                    request.recentChanges,
+                    recentChanges,
                     cursorPosition,
                     blockSize = 6,
                     editorDiagnostics = request.editorDiagnostics,
@@ -498,6 +517,26 @@ class NextEditAutocompleteEngine(
 
         logger.info("NES: returning ${completions.size} completions successfully")
         return AttemptOutcome.Success(completions)
+    }
+
+    /**
+     * Build a pseudo recent-change for a steered request with no tracked edits:
+     * the cursor line is presented as freshly inserted. The model's core skill
+     * is copying the pattern of the most recent change, and the user explicitly
+     * pointed at this line with the "next suggestion" shortcut.
+     */
+    private fun synthesizeRecentChangeForCursorLine(
+        fileContents: String,
+        cursorPosition: Int,
+        filePath: String,
+    ): String {
+        val lines = fileContents.linesSplitKeepEnds()
+        val lineIndex = NesUtils.getLineNumberFromPosition(fileContents, cursorPosition)
+        val cursorLine = lines.getOrNull(lineIndex) ?: return ""
+        if (cursorLine.isBlank()) return ""
+
+        val withoutLine = lines.subList(0, lineIndex).joinToString("") + lines.subList(lineIndex + 1, lines.size).joinToString("")
+        return "File: $filePath\n" + calculateDiff(withoutLine, fileContents)
     }
 
     private fun shouldDisableAutocomplete(fileContents: String): Boolean {

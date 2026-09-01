@@ -318,7 +318,7 @@ object NesPromptBuilder {
         // Steering is appended after truncation so the tag can never be lost
         // to the size-based rebuild above (the Python library dropped it there).
         // Avoided completions stay out of the prompt entirely — the engine
-        // escapes duplicates via the sampling temperature ladder instead.
+        // escapes duplicates via the context/temperature matrix instead.
         if (steering != null) {
             formattedPrompt += "\n<steering>\n$steering\n</steering>"
         }

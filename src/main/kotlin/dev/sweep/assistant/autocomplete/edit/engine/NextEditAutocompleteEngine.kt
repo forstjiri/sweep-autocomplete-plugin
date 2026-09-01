@@ -110,6 +110,11 @@ class NextEditAutocompleteEngine(
         val startTime = System.currentTimeMillis()
         var lastAvoided: List<AutocompleteResult>? = null
 
+        logger.info(
+            "NES: matrix start id=$autocompleteId steered=$steered rounds=${rounds.size} " +
+                "contexts=${candidates.mapIndexed { index, candidate -> "V${index + 1}:${candidate.contextLabel}@${candidate.blockStartIndex}/${candidate.codeBlock.length}" }}",
+        )
+
         for ((roundIndex, temperature) in rounds.withIndex()) {
             for ((variantIndex, candidate) in candidates.withIndex()) {
                 if (shouldAbort()) {
@@ -137,6 +142,11 @@ class NextEditAutocompleteEngine(
                         temperature = temperature,
                         forceGhostText = forceGhostText,
                     )
+                logger.info(
+                    "NES: matrix result id=$autocompleteId variant=V${variantIndex + 1} " +
+                        "context=${candidate.contextLabel} round=${roundIndex + 1}/${rounds.size} " +
+                        "temperature=$temperature outcome=${outcome.summary()}",
+                )
                 when (outcome) {
                     is AttemptOutcome.Success ->
                         return NesResponse(
@@ -161,8 +171,7 @@ class NextEditAutocompleteEngine(
         }
 
         // The whole matrix is exhausted: hand back the last avoid-matching
-        // result so the client-side dedup + cached-completion cycling can take
-        // over (Python parity for the final ladder attempt).
+        // result so client-side dedup and cached-completion cycling can take over.
         lastAvoided?.let {
             logger.info("NES: returning ${it.size} completions (avoided match, matrix exhausted)")
             return NesResponse(it, System.currentTimeMillis() - startTime, autocompleteId)
@@ -172,6 +181,7 @@ class NextEditAutocompleteEngine(
 
     /** One NES inference input: a code block context plus its cursor and chunks. */
     private data class PassCandidate(
+        val contextLabel: String,
         val codeBlock: String,
         val prefix: String,
         val suffix: String,
@@ -197,6 +207,7 @@ class NextEditAutocompleteEngine(
         val candidates =
             mutableListOf(
                 PassCandidate(
+                    contextLabel = "cursor",
                     codeBlock = cursorBlock.codeBlock,
                     prefix = cursorBlock.prefix,
                     suffix = cursorBlock.suffix,
@@ -278,6 +289,7 @@ class NextEditAutocompleteEngine(
             }
 
         return PassCandidate(
+            contextLabel = if (retrieval.diagnostic != null) "diagnostic" else if (retrieval.isBlockAfterCursor) "after-cursor" else "retrieval",
             codeBlock = fullBlock,
             prefix = retrievedPrefix,
             suffix = retrievedSuffix,
@@ -304,6 +316,7 @@ class NextEditAutocompleteEngine(
         if (wider.codeBlock == cursorBlockCode) return null
         if (NesUtils.shouldDisableForCodeBlock(wider.codeBlock)) return null
         return PassCandidate(
+            contextLabel = "wider-cursor",
             codeBlock = wider.codeBlock,
             prefix = wider.prefix,
             suffix = wider.suffix,
@@ -356,15 +369,11 @@ class NextEditAutocompleteEngine(
 
         if (promptResult.formattedPrompt.isEmpty()) return AttemptOutcome.Filtered("empty_prompt")
 
-        // Log prompt details for debugging
-        logger.info("NES: prompt length=${promptResult.formattedPrompt.length} chars, " +
+        logger.info("NES: prompt id=$autocompleteId length=${promptResult.formattedPrompt.length} " +
             "codeBlock length=${promptResult.cleanedCodeBlock.length}, " +
             "relativeCursorPos=${promptResult.relativeCursorPosition}, " +
             "relativeCursorLine=${promptResult.relativeCursorLine}, " +
             "blockStartIndex=${promptResult.blockStartIndex}")
-        // Log the last ~200 chars of the prompt (the part right before model generation)
-        val promptTail = promptResult.formattedPrompt.takeLast(300)
-        logger.info("NES: prompt tail: ...${promptTail.replace("\n", "\\n")}")
 
         // Allow output up to 2x the code block size (room for insertions) + 20 lines buffer
         val maxOutputChars = (promptResult.cleanedCodeBlock.length * 2) + (20 * 80)
@@ -398,6 +407,14 @@ class NextEditAutocompleteEngine(
         data class Success(val completions: List<AutocompleteResult>) : AttemptOutcome()
     }
 
+    private fun AttemptOutcome.summary(): String = when (this) {
+        is AttemptOutcome.Aborted -> "aborted"
+        is AttemptOutcome.EmptyText -> "empty:$reason"
+        is AttemptOutcome.Filtered -> "filtered:$reason"
+        is AttemptOutcome.Avoided -> "avoided:${completions.size}"
+        is AttemptOutcome.Success -> "success:${completions.size}"
+    }
+
     private fun generateAndProcessAttempt(
         promptResult: NesPromptBuilder.PromptBuildResult,
         fileContents: String,
@@ -429,8 +446,11 @@ class NextEditAutocompleteEngine(
 
         // Post-process completion
         var completion = promptResult.prefill + completionResult.text
-        logger.info("NES: raw completion (${completionResult.text.length} chars, finish=${completionResult.finishReason}): ${completionResult.text.take(200)}")
-        logger.info("NES: prefill='${promptResult.prefill.take(50)}', forcedPrefix='${promptResult.forcedPrefix.take(50)}'")
+        logger.info(
+            "NES: output id=$autocompleteId chars=${completionResult.text.length} " +
+                "finish=${completionResult.finishReason} prefill=${promptResult.prefill.length} " +
+                "forcedPrefix=${promptResult.forcedPrefix.length}",
+        )
 
         if (completion.startsWith("<|") || completion.removePrefix(promptResult.forcedPrefix).startsWith("<|")) {
             logger.warn("NES: filtered — completion starts with special token")
@@ -487,9 +507,10 @@ class NextEditAutocompleteEngine(
 
         if (completions.isEmpty()) {
             logger.warn("NES: filtered — no hunks selected from completion")
-            logger.warn("NES: cleanedCodeBlock (${promptResult.cleanedCodeBlock.length} chars): '${promptResult.cleanedCodeBlock.take(150).replace("\n", "\\n")}'")
-            logger.warn("NES: completion after cleanup (${completion.length} chars): '${completion.take(150).replace("\n", "\\n")}'")
-            logger.warn("NES: completion == cleanedCodeBlock? ${completion == promptResult.cleanedCodeBlock}")
+            logger.info(
+                "NES: no-hunks id=$autocompleteId output=${completion.length} " +
+                    "block=${promptResult.cleanedCodeBlock.length} exactBlock=${completion == promptResult.cleanedCodeBlock}",
+            )
             return AttemptOutcome.Filtered("no_hunks")
         }
 

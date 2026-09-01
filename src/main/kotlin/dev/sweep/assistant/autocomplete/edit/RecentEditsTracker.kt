@@ -2046,10 +2046,8 @@ class RecentEditsTracker(
                 while (isActive) {
                     try {
                         val (request, received) = completionChannel.receive()
-                        // An empty engine result (all ladder attempts filtered) must still
-                        // reach the steered retry/cycle chain below — synthesize an empty
-                        // response so a shortcut press never silently disappears. Plain
-                        // typing has nothing to retry and stays a no-op.
+                        // An empty steered matrix result still reaches the cycle/fallback
+                        // path below so a shortcut press is observable in the logs.
                         val response =
                             received ?: if (request.steering != null) {
                                 logger.info("Empty steered engine result — entering client steering chain")
@@ -2167,10 +2165,9 @@ class RecentEditsTracker(
                                         "Skipping duplicate steered autocomplete response: " +
                                             "request=${request.requestTime}, completion=${firstResponse.completion.replace("\n", "\\n").take(300)}",
                                     )
-                                    // The engine already retried this steered request on its sampling
-                                    // temperature ladder (0.35 → 0.8 → 1.05) and still produced a
-                                    // repeat, so cycle the previously shown suggestions for this
-                                    // document state instead of spending more GPU time on retries.
+                                    // The engine already exhausted its context/temperature matrix,
+                                    // so cycle previously shown suggestions instead of spending more
+                                    // GPU time on another request.
                                     if (!showNextCachedCompletion()) {
                                         // Nothing cached for this state — show the repeated
                                         // response anyway so the keypress never ends empty.
@@ -2207,23 +2204,10 @@ class RecentEditsTracker(
                             } ?: run {
                                 if (request.steering != null) {
                                     logger.info(
-                                        "Empty steered autocomplete response: request=${request.requestTime}, " +
-                                            "attempt=$steeringAttempt",
+                                        "Empty steered autocomplete response: request=${request.requestTime}; " +
+                                            "matrix exhausted, no extra client retry",
                                     )
-                                    if (steeringAttempt < steeringPrompts.size) {
-                                        val previousCompletion = lastSteeredCompletion
-                                            ?.replace("\n", "\\n")
-                                            ?.take(500)
-                                        val retrySteering = steeringPrompts[steeringAttempt] +
-                                            (previousCompletion?.let {
-                                                " Do not produce this previous completion or a trivial variation: $it"
-                                            } ?: "")
-                                        processLatestEdit(steering = retrySteering)
-                                        steeringAttempt++
-                                    } else {
-                                        logger.info("Stopping empty steering retries after ${steeringPrompts.size} attempts")
-                                        showNextCachedCompletion()
-                                    }
+                                    showNextCachedCompletion()
                                     return@invokeLater
                                 }
                                 // No suggestion was generated - track file contents for 1% of cases

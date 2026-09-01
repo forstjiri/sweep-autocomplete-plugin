@@ -47,6 +47,9 @@ class LocalAutocompleteServerManager : Disposable {
     private var lastKnownHealthy = false
 
     @Volatile
+    private var lastHealthCheckAt = 0L
+
+    @Volatile
     private var terminalStartInFlightUntil = 0L
 
     @Volatile
@@ -55,15 +58,15 @@ class LocalAutocompleteServerManager : Disposable {
     init {
         scope.launch {
             while (isActive) {
+                val wasHealthy = lastKnownHealthy
                 val healthy = isServerHealthy()
-                if (lastKnownHealthy && !healthy) {
+                if (wasHealthy && !healthy) {
                     logger.warn("Local autocomplete terminal server became unhealthy")
                     showNotification(
                         "Local autocomplete server stopped. Check the Vulcan Sweep Server terminal tab.",
                         NotificationType.WARNING,
                     )
                 }
-                lastKnownHealthy = healthy
                 delay(HEALTH_CHECK_INTERVAL_MS)
             }
         }
@@ -78,8 +81,8 @@ class LocalAutocompleteServerManager : Disposable {
 
     fun getServerUrl(): String = "http://localhost:${getPort()}"
 
-    fun isServerHealthy(): Boolean =
-        try {
+    fun isServerHealthy(): Boolean {
+        val healthy = try {
             val request = HttpRequest.newBuilder()
                 .uri(URI.create("${getServerUrl()}/health"))
                 .timeout(Duration.ofMillis(HEALTH_CHECK_TIMEOUT_MS))
@@ -89,6 +92,14 @@ class LocalAutocompleteServerManager : Disposable {
         } catch (e: Exception) {
             false
         }
+        lastKnownHealthy = healthy
+        lastHealthCheckAt = System.currentTimeMillis()
+        return healthy
+    }
+
+    /** Returns the polled health result when it is fresh enough for autocomplete. */
+    fun recentServerHealth(maxAgeMs: Long = HEALTH_CHECK_INTERVAL_MS + HEALTH_CHECK_TIMEOUT_MS): Boolean? =
+        lastKnownHealthy.takeIf { System.currentTimeMillis() - lastHealthCheckAt <= maxAgeMs }
 
     private val isWindows = System.getProperty("os.name").lowercase().contains("win")
 

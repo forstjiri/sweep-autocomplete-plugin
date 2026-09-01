@@ -37,7 +37,8 @@ class NextEditAutocompleteClient(
     ): NextEditAutocompleteResponse? {
         if (shouldAbort()) return null
         val serverManager = LocalAutocompleteServerManager.getInstance()
-        if (!serverManager.isServerHealthy()) {
+        val serverHealthy = serverManager.recentServerHealth() ?: serverManager.isServerHealthy()
+        if (!serverHealthy) {
             logger.info("Local llama-server not healthy on request — starting in terminal")
             serverManager.startServerInTerminal(project)
             // Server takes several seconds to load; skip this autocomplete request rather

@@ -170,4 +170,29 @@ class NesCompletionParserTest {
         assertEquals(cursorPosition, results.single().endIndex)
         assertEquals("inserted\n", results.single().completion)
     }
+
+    @Test
+    fun `complete changed window ends with two unchanged final lines`() {
+        val codeBlock = "first\nsecond\nthird\nfourth\n"
+
+        assertTrue(
+            NesCompletionParser.hasCompleteChangedWindow(
+                "first\nupdated\nthird\nfourth\n",
+                codeBlock,
+            ),
+        )
+        assertFalse(NesCompletionParser.hasCompleteChangedWindow(codeBlock, codeBlock))
+        assertFalse(
+            NesCompletionParser.hasCompleteChangedWindow(
+                "third\nfourth\n",
+                codeBlock,
+            ),
+        )
+        assertFalse(
+            NesCompletionParser.hasCompleteChangedWindow(
+                "first\nsecond\nthird\nupdated\n",
+                codeBlock,
+            ),
+        )
+    }
 }

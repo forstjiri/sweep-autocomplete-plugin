@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpServer
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -103,6 +104,18 @@ class LlamaServerClientTest {
         lone.start()
         assertFinishes(lone, "lone")
         assertEquals("ok:length", outcomes["lone"])
+    }
+
+    @Test
+    fun `complete-window predicate stops streaming`() {
+        val completion = client.generateCompletion(
+            prompt = "p",
+            maxOutputChars = 1_000_000,
+            shouldStop = { it.length >= 30 },
+        )
+
+        assertEquals("sufficient", completion.finishReason)
+        assertTrue(completion.text.length >= 30)
     }
 
     @Test

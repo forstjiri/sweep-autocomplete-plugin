@@ -18,6 +18,19 @@ object NesCompletionParser {
     )
 
     /**
+     * A streamed rewrite is ready once it covers most of the window and its
+     * final two original lines. Continuing after that boundary only adds
+     * unrelated text. Edits that touch the tail deliberately stream normally.
+     */
+    fun hasCompleteChangedWindow(completion: String, codeBlock: String): Boolean {
+        val lastLineStart = codeBlock.lastIndexOf('\n', codeBlock.length - 2)
+        val penultimateLineStart = if (lastLineStart > 0) codeBlock.lastIndexOf('\n', lastLineStart - 1) else -1
+        if (penultimateLineStart == -1 || completion.length * 4 < codeBlock.length * 3 || completion == codeBlock) return false
+
+        return completion.endsWith(codeBlock.substring(penultimateLineStart + 1))
+    }
+
+    /**
      * Check if the completion is a pure ghost text insertion at the given position.
      * Returns the ghost text if found, empty string otherwise.
      */

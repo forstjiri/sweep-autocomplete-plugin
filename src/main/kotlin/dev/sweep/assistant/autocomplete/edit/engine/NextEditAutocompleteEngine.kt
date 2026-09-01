@@ -387,6 +387,9 @@ class NextEditAutocompleteEngine(
                     prompt = promptResult.formattedPrompt,
                     maxOutputChars = maxOutputChars,
                     temperature = temperature,
+                    shouldStop = {
+                        NesCompletionParser.hasCompleteChangedWindow(it, promptResult.cleanedCodeBlock)
+                    },
                 )
             } catch (e: LlamaServerClient.RequestCancelledException) {
                 logger.info("NES request cancelled")

@@ -75,6 +75,7 @@ class LlamaServerClient(
      *
      * @param maxOutputChars Abort if accumulated text exceeds this length.
      *   Set to 0 to disable early abort (use max_tokens only).
+     * @param shouldStop Abort after receiving a complete, actionable rewrite.
      */
     fun generateCompletion(
         prompt: String,
@@ -82,6 +83,7 @@ class LlamaServerClient(
         maxTokens: Int = NesConstants.AUTOCOMPLETE_OUTPUT_MAX_TOKENS,
         temperature: Float = 0.0f,
         maxOutputChars: Int = 0,
+        shouldStop: (String) -> Boolean = { false },
     ): CompletionResult {
         val myId = requestCounter.incrementAndGet()
         val currentThread = Thread.currentThread()
@@ -172,6 +174,12 @@ class LlamaServerClient(
                             logger.info("Early abort: output ${accumulated.length} chars > limit $maxOutputChars")
                             abortedEarly = true
                             finishReason = "length"
+                            break
+                        }
+                        if (shouldStop(accumulated.toString())) {
+                            logger.info("Early abort: completion contains a complete changed window")
+                            abortedEarly = true
+                            finishReason = "sufficient"
                             break
                         }
                     }

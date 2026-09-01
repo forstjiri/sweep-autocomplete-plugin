@@ -116,7 +116,7 @@ class NextEditAutocompleteEngine(
             }
 
         // Limit chunks for local model
-        val fileChunks = request.fileChunks.take(1)
+        val fileChunks = request.fileChunks.takeLast(1)
         val limitedRetrievalChunks =
             if (steered) retrievalChunks.take(MAX_RETRIEVAL_CHUNKS) else retrievalChunks.take(1)
 

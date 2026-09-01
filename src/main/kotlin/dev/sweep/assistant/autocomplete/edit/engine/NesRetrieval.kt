@@ -1,7 +1,6 @@
 package dev.sweep.assistant.autocomplete.edit.engine
 
 import com.github.difflib.DiffUtils
-import java.util.concurrent.ConcurrentHashMap
 import java.util.regex.Pattern
 import kotlin.math.abs
 
@@ -15,36 +14,22 @@ object NesRetrieval {
     private val WORD_PATTERN = Pattern.compile("\\w+", Pattern.CASE_INSENSITIVE or Pattern.UNICODE_CHARACTER_CLASS)
     private val WORD_BOUNDARY_PATTERN = Pattern.compile("\\w+|\\s+|[^\\w\\s]")
 
-    // Simple LRU-ish caches (bounded ConcurrentHashMaps)
-    private val tokenizerCache = ConcurrentHashMap<String, List<String>>(256)
-    private val tokenizerWithOffsetsCache = ConcurrentHashMap<String, List<Triple<String, Int, Int>>>(256)
-
-    /** Extract words from text (case-insensitive). Cached. */
+    /** Extract words from text (case-insensitive). */
     fun simpleTokenizer(text: String): List<String> {
-        return tokenizerCache.getOrPut(text) {
-            val matcher = WORD_PATTERN.matcher(text)
-            val tokens = mutableListOf<String>()
-            while (matcher.find()) tokens.add(matcher.group())
-            tokens
-        }
+        val matcher = WORD_PATTERN.matcher(text)
+        val tokens = mutableListOf<String>()
+        while (matcher.find()) tokens.add(matcher.group())
+        return tokens
     }
 
-    /** Extract words with character offsets. Cached. */
+    /** Extract words with character offsets. */
     fun simpleTokenizerWithOffsets(text: String): List<Triple<String, Int, Int>> {
-        return tokenizerWithOffsetsCache.getOrPut(text) {
-            val matcher = WORD_PATTERN.matcher(text)
-            val tokens = mutableListOf<Triple<String, Int, Int>>()
-            while (matcher.find()) {
-                tokens.add(Triple(matcher.group(), matcher.start(), matcher.end()))
-            }
-            tokens
+        val matcher = WORD_PATTERN.matcher(text)
+        val tokens = mutableListOf<Triple<String, Int, Int>>()
+        while (matcher.find()) {
+            tokens.add(Triple(matcher.group(), matcher.start(), matcher.end()))
         }
-    }
-
-    /** Clear caches (call between requests if memory is a concern). */
-    fun clearCaches() {
-        tokenizerCache.clear()
-        tokenizerWithOffsetsCache.clear()
+        return tokens
     }
 
     /**

@@ -323,6 +323,7 @@ class RecentEditsTracker(
         const val CHUNK_OVERLAP_LINES = 100
         const val MAX_CHUNKS_TO_SEND = 5
         const val MAX_RETRIEVAL_CHUNK_SIZE = 200
+        const val MAX_RETRIEVAL_CHUNKS_TO_SEND = 3
         const val CURSOR_POSITION_LIFESPAN = 30_000L
         const val CURSOR_MOVEMENT_REJECTION_THRESHOLD = 1000L
         const val TRACK_CURSOR_POSITIONS_ENABLED = true
@@ -1814,7 +1815,7 @@ class RecentEditsTracker(
         )
     }
 
-    private fun getRelevantFileChunks(): List<FileChunk> {
+    private fun getRelevantFileChunks(maxChunks: Int = MAX_CHUNKS_TO_SEND): List<FileChunk> {
         val fileChunks = mutableListOf<FileChunk>()
         val processedChunks = mutableSetOf<Pair<String, Int>>() // (filePath, startLine) to avoid duplicates
 
@@ -1830,7 +1831,7 @@ class RecentEditsTracker(
         val filteredCursorPositions = recentCursorPositions
 
         for (cursorRecord in filteredCursorPositions.reversed()) {
-            if (fileChunks.size >= MAX_CHUNKS_TO_SEND) break
+            if (fileChunks.size >= maxChunks) break
 
             val fileContent = readFile(project, cursorRecord.filePath) ?: continue
             if (isFileTooLarge(fileContent, project)) continue
@@ -1868,7 +1869,7 @@ class RecentEditsTracker(
             processedChunks.add(chunkKey)
         }
 
-        return fileChunks.sortedBy { it.timestamp }.takeLast(MAX_CHUNKS_TO_SEND)
+        return fileChunks.sortedBy { it.timestamp }.takeLast(maxChunks)
     }
 
     // Chat-side prompt bar / applied code block tracking removed; autocomplete is always
@@ -2475,13 +2476,17 @@ class RecentEditsTracker(
                 logger.warn("File is too large to fetch next edit autocomplete")
                 return null
             }
-            val fileChunks = getRelevantFileChunks()
+            val fileChunks = getRelevantFileChunks(maxChunks = 1)
             if (shouldAbort()) return null
-            val otherOpenedFileChunks = getOtherOpenedFileChunks()
+            val allFileChunks =
+                if (fileChunks.isNotEmpty()) {
+                    listOf(fileChunks.last())
+                } else {
+                    getOtherOpenedFileChunks().take(1)
+                }
             if (shouldAbort()) return null
             // ClipboardTrackingService removed with chat code; no clipboard chunks are sent.
             val clipboardChunks: List<FileChunk> = emptyList()
-            val allFileChunks = fileChunks + otherOpenedFileChunks
             val relPath = relativePath(project, filePath) ?: filePath
             var retrievalChunks = emptyList<FileChunk>()
             getCurrentEditorState()?.let { editorState ->
@@ -2541,7 +2546,7 @@ class RecentEditsTracker(
                             project,
                             snippets,
                         )
-                    }.reversed()
+                    }.reversed().take(if (steering != null) MAX_RETRIEVAL_CHUNKS_TO_SEND else 1)
             }
             if (shouldAbort()) return null
 

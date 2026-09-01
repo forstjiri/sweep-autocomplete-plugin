@@ -1,4 +1,3 @@
-import com.google.protobuf.gradle.id
 import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.models.ProductRelease
@@ -7,7 +6,6 @@ plugins {
     id("java")
     id("org.jetbrains.intellij.platform") version "2.2.0"
     kotlin("jvm") version "2.1.0"
-    id("com.google.protobuf") version "0.9.4"
     kotlin("plugin.serialization") version "1.9.20"
 }
 
@@ -15,7 +13,7 @@ val pluginId = "dev.forstjiri.vulcansweep"
 val pluginName = "Vulcan Sweep"
 println("Building plugin: $pluginName with ID: $pluginId")
 group = "dev.sweep"
-version = "1.32.6"
+version = "1.32.7"
 
 repositories {
     mavenCentral()
@@ -173,14 +171,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.5.1")
     implementation("io.github.java-diff-utils:java-diff-utils:4.12")
     implementation("org.eclipse.jgit:org.eclipse.jgit:6.7.0.202309050840-r")
-    implementation("com.google.protobuf:protobuf-kotlin:3.23.4")
-    implementation("com.aayushatharva.brotli4j:brotli4j:1.16.0")
-    implementation("com.aayushatharva.brotli4j:native-osx-aarch64:1.16.0")
-    implementation("com.aayushatharva.brotli4j:native-osx-x86_64:1.16.0")
-    implementation("com.aayushatharva.brotli4j:native-linux-x86_64:1.16.0")
-    implementation("com.aayushatharva.brotli4j:native-linux-aarch64:1.16.0")
-    implementation("com.aayushatharva.brotli4j:native-windows-x86_64:1.16.0")
-    implementation("com.aayushatharva.brotli4j:native-windows-aarch64:1.16.0")
 
     testImplementation("org.junit.jupiter:junit-jupiter-api:5.10.0")
     testImplementation("org.junit.jupiter:junit-jupiter:5.9.2")
@@ -223,8 +213,6 @@ kotlin {
         main {
             kotlin.srcDirs(
                 "src/main/kotlin",
-                "build/generated/source/proto/main/java",
-                "build/generated/source/proto/main/kotlin",
                 "scripts",
             )
             // Add resources directory explicitly
@@ -233,21 +221,6 @@ kotlin {
         test {
             kotlin.srcDirs("src/test/kotlin")
             resources.srcDirs("src/test/resources")
-        }
-    }
-}
-
-protobuf {
-    protoc {
-        artifact = "com.google.protobuf:protoc:3.23.4"
-    }
-
-    // Generate Kotlin code
-    generateProtoTasks {
-        all().forEach { task ->
-            task.builtins {
-                id("kotlin")
-            }
         }
     }
 }

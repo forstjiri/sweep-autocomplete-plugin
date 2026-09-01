@@ -96,4 +96,35 @@ class NesPromptBuilderTest {
         assertFalse(block.codeBlock.contains("val item26 = 26\n"))
         assertEquals(contents.indexOf("val item5 = 5\n"), block.blockStartIndex)
     }
+
+    @Test
+    fun `cursor block start follows skipped leading blank lines`() {
+        val contents = "\n\nval first = 1\nval second = 2\n"
+
+        val block = NesPromptBuilder.getBlockAtCursor(contents, contents.indexOf("val first"))
+
+        assertEquals(contents.indexOf("val first"), block.blockStartIndex)
+        assertTrue(block.codeBlock.startsWith("val first"))
+    }
+
+    @Test
+    fun `prompt uses the supplied repeated block offset`() {
+        val block = "same\nsuffix\n"
+        val contents = "header\n$block between\n$block"
+        val secondBlockStart = contents.lastIndexOf(block)
+        val cursorPosition = secondBlockStart + "same\n".length
+
+        val result = NesPromptBuilder.buildPrompt(
+            filePath = "src/Main.kt",
+            fileContents = contents,
+            originalFileContents = contents,
+            recentChanges = "",
+            cursorPosition = cursorPosition,
+            codeBlock = block,
+            blockStartIndex = secondBlockStart,
+        )
+
+        assertTrue(result.formattedPrompt.isNotEmpty())
+        assertEquals("same\n".length, result.relativeCursorPosition)
+    }
 }

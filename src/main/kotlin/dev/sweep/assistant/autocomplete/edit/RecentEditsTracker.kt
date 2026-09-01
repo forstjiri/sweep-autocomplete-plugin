@@ -2571,6 +2571,7 @@ class RecentEditsTracker(
                     changes_above_cursor = FeatureFlagService.getInstance(project).isFeatureEnabled("autocomplete-changes-above-cursor"),
                      editor_diagnostics = getEditorDiagnostics(),
                     steering = steering,
+                    automatic_steering = autoSteering,
                     avoid_completions = avoidCompletions.take(10),
                 )
 

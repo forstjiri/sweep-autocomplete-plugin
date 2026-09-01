@@ -117,6 +117,7 @@ class NesCompletionParserTest {
             comps,
             input["file_contents"].asString,
             input["cleaned_code_block"].asString,
+            input["file_contents"].asString.indexOf(input["cleaned_code_block"].asString),
         )
         assertEquals(expected, result)
     }
@@ -133,6 +134,7 @@ class NesCompletionParserTest {
             input["file_contents"].asString,
             input["cursor_position"].asInt,
             input["autocomplete_id"].asString,
+            input["file_contents"].asString.indexOf(input["cleaned_code_block"].asString),
         )
 
         assertEquals(expectedArray.size(), results.size, "Number of results should match")
@@ -145,5 +147,27 @@ class NesCompletionParserTest {
             assertEquals(expected["completion"].asString, actual.completion, "Result $i: completion")
             assertEquals(expected["autocomplete_id"].asString, actual.autocompleteId, "Result $i: autocomplete_id")
         }
+    }
+
+    @Test
+    fun `selectBestHunk uses the supplied repeated block offset`() {
+        val block = "same\nsuffix\n"
+        val fileContents = "header\n$block between\n$block"
+        val secondBlockStart = fileContents.lastIndexOf(block)
+        val cursorPosition = secondBlockStart + "same\n".length
+
+        val results = NesCompletionParser.selectBestHunkFromCompletion(
+            completionRaw = "same\ninserted\nsuffix\n",
+            cleanedCodeBlockRaw = block,
+            fileContents = fileContents,
+            cursorPosition = cursorPosition,
+            autocompleteId = "test",
+            codeBlockStartIndex = secondBlockStart,
+        )
+
+        assertEquals(1, results.size)
+        assertEquals(cursorPosition, results.single().startIndex)
+        assertEquals(cursorPosition, results.single().endIndex)
+        assertEquals("inserted\n", results.single().completion)
     }
 }

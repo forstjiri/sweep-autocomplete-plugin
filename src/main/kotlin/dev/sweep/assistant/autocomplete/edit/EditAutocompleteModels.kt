@@ -108,6 +108,7 @@ data class NextEditAutocompleteRequest(
     val ping: Boolean = false,
     val editor_diagnostics: List<@Serializable EditorDiagnostic> = emptyList(),
     val steering: String? = null,
+    val automatic_steering: String? = null,
     val avoid_completions: List<String> = emptyList(),
 )
 

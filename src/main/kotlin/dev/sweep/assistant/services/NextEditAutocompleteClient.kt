@@ -85,6 +85,7 @@ class NextEditAutocompleteClient(
                 )
             },
             steering = request.steering,
+            automaticSteering = request.automatic_steering,
             avoidCompletions = request.avoid_completions,
         )
 

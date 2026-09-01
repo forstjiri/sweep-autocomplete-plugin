@@ -38,6 +38,7 @@ class NextEditAutocompleteEngine(
         val changesAboveCursor: Boolean = false,
         val editorDiagnostics: List<NesRetrieval.EditorDiagnosticData>? = null,
         val steering: String? = null,
+        val automaticSteering: String? = null,
         val avoidCompletions: List<String> = emptyList(),
     )
 
@@ -93,6 +94,7 @@ class NextEditAutocompleteEngine(
         // steered requests get more retrieval context (quality over latency);
         // plain typing keeps a single chunk for speed.
         val steered = request.steering != null || request.avoidCompletions.isNotEmpty()
+        val promptSteering = request.steering ?: request.automaticSteering
 
         // An explicit "next suggestion" press with no tracked edits (fresh IDE
         // session, cursor-only navigation) leaves the model without the "what
@@ -157,7 +159,7 @@ class NextEditAutocompleteEngine(
                         retrievalChunks = candidate.retrievalChunks,
                         recentChangesHighRes = request.recentChangesHighRes,
                         changesAboveCursor = request.changesAboveCursor,
-                        steering = request.steering,
+                        steering = promptSteering,
                         avoidCompletions = request.avoidCompletions,
                         temperature = temperature,
                         forceGhostText = forceGhostText,
@@ -297,7 +299,7 @@ class NextEditAutocompleteEngine(
             contextLabel = if (retrieval.diagnostic != null) "diagnostic" else if (retrieval.isBlockAfterCursor) "after-cursor" else "retrieval",
             codeBlock = fullBlock,
             cursorPosition = cursorInBlock,
-            blockStartIndex = retrieval.blockStartOffset,
+            blockStartIndex = retrieval.blockStartOffset - retrievedPrefix.length,
             retrievalChunks = extraChunks,
         )
     }
@@ -471,7 +473,12 @@ class NextEditAutocompleteEngine(
 
         // Select best hunks
         val selectedCompletions = NesCompletionParser.selectBestHunkFromCompletion(
-            completion, promptResult.cleanedCodeBlock, fileContents, cursorPosition, autocompleteId,
+            completion,
+            promptResult.cleanedCodeBlock,
+            fileContents,
+            cursorPosition,
+            autocompleteId,
+            promptResult.blockStartIndex,
         )
 
         logger.info("NES: selectBestHunk returned ${selectedCompletions.size} completions")
@@ -501,7 +508,10 @@ class NextEditAutocompleteEngine(
         // texts to be exempt; the port filtered everything.)
         if (!NesUtils.isGhostTextInsertionOnly(completions, cursorPosition)) {
             val codeBlockWithCompletions = NesCompletionParser.applyCompletionsToCodeBlock(
-                completions, fileContents, promptResult.cleanedCodeBlock,
+                completions,
+                fileContents,
+                promptResult.cleanedCodeBlock,
+                promptResult.blockStartIndex,
             )
             for (section in promptResult.prevSections) {
                 if (NesUtils.isEqualIgnoringNewlines(codeBlockWithCompletions, section)) {

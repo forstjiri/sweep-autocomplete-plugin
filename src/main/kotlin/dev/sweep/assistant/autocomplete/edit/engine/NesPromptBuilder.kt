@@ -23,6 +23,11 @@ object NesPromptBuilder {
         val blockStartIndex: Int,
     )
 
+    private data class RawBlock(
+        val codeBlock: String,
+        val startLine: Int,
+    )
+
     data class FileChunkData(
         val filePath: String,
         val content: String,
@@ -51,11 +56,10 @@ object NesPromptBuilder {
     fun getBlockAtCursor(fileContents: String, cursorPosition: Int): BlockAtCursor {
         val lines = fileContents.linesSplitKeepEnds()
         val cursorLine = NesUtils.getLineNumberFromPosition(fileContents, cursorPosition)
-        val codeBlock = getBlockAroundCursorLine(lines, cursorLine, NUM_LINES_BEFORE, NUM_LINES_AFTER)
-        val blockStartLine = max(0, cursorLine - NUM_LINES_BEFORE)
-        val blockStartIndex = lines.take(blockStartLine).sumOf { it.length }
+        val rawBlock = getBlockAroundCursorLine(lines, cursorLine, NUM_LINES_BEFORE, NUM_LINES_AFTER)
+        val blockStartIndex = lines.take(rawBlock.startLine).sumOf { it.length }
 
-        val truncatedBlock = truncateCodeBlockByTokens(codeBlock)
+        val truncatedBlock = truncateCodeBlockByTokens(rawBlock.codeBlock)
 
         return BlockAtCursor(truncatedBlock, blockStartIndex)
     }
@@ -65,7 +69,7 @@ object NesPromptBuilder {
         cursorLine: Int,
         numLinesBefore: Int,
         numLinesAfter: Int,
-    ): String {
+    ): RawBlock {
         var blockStart = max(0, cursorLine - numLinesBefore)
         var blockEnd = min(lines.size, cursorLine + numLinesAfter + 1)
 
@@ -82,7 +86,7 @@ object NesPromptBuilder {
             currentBlock = currentBlock.trimEnd('\n') + "\n"
         }
 
-        return currentBlock
+        return RawBlock(currentBlock, blockStart)
     }
 
     /** Public access for the engine's retrieval pass. */
@@ -206,7 +210,16 @@ object NesPromptBuilder {
         forceGhostText: Boolean = false,
         useRemoteEndpoint: Boolean = false,
     ): PromptBuildResult {
-        val relativeCursorPosition = cursorPosition - fileContents.indexOf(codeBlock)
+        val relativeCursorPosition = cursorPosition - blockStartIndex
+        if (blockStartIndex < 0 ||
+            relativeCursorPosition !in 0..codeBlock.length ||
+            fileContents.regionMatches(blockStartIndex, codeBlock, 0, codeBlock.length).not()
+        ) {
+            return PromptBuildResult(
+                "", codeBlock, "", "", emptyList(),
+                relativeCursorPosition, 0, blockStartIndex,
+            )
+        }
         var cleanedCodeBlock = codeBlock
         val relativeCursorLine = NesUtils.getLineNumberFromPosition(codeBlock, relativeCursorPosition)
 

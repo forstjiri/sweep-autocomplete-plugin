@@ -120,18 +120,23 @@ object NesCompletionParser {
         completions: List<AutocompleteResult>,
         fileContents: String,
         cleanedCodeBlock: String,
+        codeBlockStartIndex: Int,
     ): String {
         if (completions.isEmpty()) return cleanedCodeBlock
 
-        val cleanedCodeStartIndex = fileContents.indexOf(cleanedCodeBlock)
-        if (cleanedCodeStartIndex == -1) return cleanedCodeBlock
+        if (codeBlockStartIndex < 0 ||
+            codeBlockStartIndex + cleanedCodeBlock.length > fileContents.length ||
+            !fileContents.regionMatches(codeBlockStartIndex, cleanedCodeBlock, 0, cleanedCodeBlock.length)
+        ) {
+            return cleanedCodeBlock
+        }
 
         var modifiedCodeBlock = cleanedCodeBlock
         val sorted = completions.sortedByDescending { it.startIndex }
 
         for (comp in sorted) {
-            val relativeStart = comp.startIndex - cleanedCodeStartIndex
-            val relativeEnd = comp.endIndex - cleanedCodeStartIndex
+            val relativeStart = comp.startIndex - codeBlockStartIndex
+            val relativeEnd = comp.endIndex - codeBlockStartIndex
             if (relativeStart >= 0 && relativeStart <= cleanedCodeBlock.length && relativeEnd <= cleanedCodeBlock.length) {
                 modifiedCodeBlock = modifiedCodeBlock.substring(0, relativeStart) +
                     comp.completion +
@@ -153,14 +158,18 @@ object NesCompletionParser {
         fileContents: String,
         cursorPosition: Int,
         autocompleteId: String,
+        codeBlockStartIndex: Int,
     ): List<AutocompleteResult> {
         val completion = NesUtils.stripLeadingEmptyNewlines(completionRaw)
         val cleanedCodeBlock = NesUtils.stripLeadingEmptyNewlines(cleanedCodeBlockRaw)
 
         if (completion == cleanedCodeBlock) return emptyList()
 
-        val blockStartOffset = fileContents.indexOf(cleanedCodeBlock)
-        if (blockStartOffset == -1) return emptyList()
+        val blockStartOffset = codeBlockStartIndex + (cleanedCodeBlockRaw.length - cleanedCodeBlock.length)
+        if (blockStartOffset < 0 ||
+            blockStartOffset + cleanedCodeBlock.length > fileContents.length ||
+            !fileContents.regionMatches(blockStartOffset, cleanedCodeBlock, 0, cleanedCodeBlock.length)
+        ) return emptyList()
 
         val relativeCursorPosition = cursorPosition - blockStartOffset
 

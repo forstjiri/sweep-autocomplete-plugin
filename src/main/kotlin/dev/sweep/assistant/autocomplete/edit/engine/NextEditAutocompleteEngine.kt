@@ -35,8 +35,6 @@ class NextEditAutocompleteEngine(
         val retrievalChunks: List<NesPromptBuilder.FileChunkData> = emptyList(),
         val recentUserActions: List<UserAction> = emptyList(),
         val recentChangesHighRes: String = "",
-        val changesAboveCursor: Boolean = false,
-        val editorDiagnostics: List<NesRetrieval.EditorDiagnosticData>? = null,
         val steering: String? = null,
         val automaticSteering: String? = null,
         val avoidCompletions: List<String> = emptyList(),
@@ -160,7 +158,6 @@ class NextEditAutocompleteEngine(
                         fileChunks = fileChunks,
                         retrievalChunks = candidate.retrievalChunks,
                         recentChangesHighRes = request.recentChangesHighRes,
-                        changesAboveCursor = request.changesAboveCursor,
                         steering = promptSteering,
                         avoidCompletions = request.avoidCompletions,
                         temperature = temperature,
@@ -248,7 +245,6 @@ class NextEditAutocompleteEngine(
                     recentChanges,
                     cursorPosition,
                     blockSize = 6,
-                    editorDiagnostics = request.editorDiagnostics,
                 )
                 .filter { it.blockStartOffset != cursorBlock.blockStartIndex }
                 .take(maxRetrievalVariants)
@@ -282,27 +278,12 @@ class NextEditAutocompleteEngine(
         )
         if (NesUtils.shouldDisableForCodeBlock(fullBlock)) return null
 
-        // Add diagnostic as retrieval chunk if present
-        val extraChunks =
-            if (retrieval.diagnostic != null) {
-                val diagLine = fileContents.lines().getOrElse(retrieval.diagnostic.lineNumber) { "" }
-                listOf(
-                    NesPromptBuilder.FileChunkData(
-                        "diagnostics",
-                        "${retrieval.diagnostic.message} at line ${retrieval.diagnostic.lineNumber}:\n$diagLine",
-                        1, 2,
-                    )
-                ) + limitedRetrievalChunks
-            } else {
-                limitedRetrievalChunks
-            }
-
         return PassCandidate(
-            contextLabel = if (retrieval.diagnostic != null) "diagnostic" else if (retrieval.isBlockAfterCursor) "after-cursor" else "retrieval",
+            contextLabel = if (retrieval.isBlockAfterCursor) "after-cursor" else "retrieval",
             codeBlock = fullBlock,
             cursorPosition = cursorInBlock,
             blockStartIndex = retrieval.blockStartOffset - retrievedPrefix.length,
-            retrievalChunks = extraChunks,
+            retrievalChunks = limitedRetrievalChunks,
         )
     }
 
@@ -318,7 +299,6 @@ class NextEditAutocompleteEngine(
         fileChunks: List<NesPromptBuilder.FileChunkData>,
         retrievalChunks: List<NesPromptBuilder.FileChunkData>,
         recentChangesHighRes: String,
-        changesAboveCursor: Boolean,
         steering: String?,
         avoidCompletions: List<String>,
         temperature: Float,
@@ -337,7 +317,6 @@ class NextEditAutocompleteEngine(
             fileChunks = fileChunks,
             retrievalChunks = retrievalChunks,
             recentChangesHighRes = recentChangesHighRes,
-            changesAboveCursor = changesAboveCursor,
             steering = steering,
             forceGhostText = forceGhostText,
             useRemoteEndpoint = false,  // local llama-server

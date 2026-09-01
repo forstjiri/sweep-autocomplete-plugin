@@ -54,16 +54,6 @@ data class EditorState(
     }
 }
 
-@Serializable
-data class EditorDiagnostic(
-    val line: Int,
-    val start_offset: Int,
-    val end_offset: Int,
-    val severity: String,
-    val message: String,
-    val timestamp: Long = System.currentTimeMillis(),
-)
-
 /**
  * The server renders {initial_file} from [NextEditAutocompleteRequest.original_file_contents] but
  * locates the cursor with the *current* cursor_position / line numbers. If anything above the
@@ -90,8 +80,6 @@ fun effectiveOriginalFileContents(
 
 @Serializable
 data class NextEditAutocompleteRequest(
-    val repo_name: String,
-    val branch: String? = null,
     val file_path: String,
     val file_contents: String,
     val recent_changes: String,
@@ -100,13 +88,7 @@ data class NextEditAutocompleteRequest(
     val file_chunks: List<@Serializable FileChunk>,
     val retrieval_chunks: List<@Serializable FileChunk>,
     val recent_user_actions: List<@Serializable UserAction>,
-    val multiple_suggestions: Boolean = true,
-    val privacy_mode_enabled: Boolean = false,
-    val client_ip: String? = null,
     val recent_changes_high_res: String,
-    val changes_above_cursor: Boolean,
-    val ping: Boolean = false,
-    val editor_diagnostics: List<@Serializable EditorDiagnostic> = emptyList(),
     val steering: String? = null,
     val automatic_steering: String? = null,
     val avoid_completions: List<String> = emptyList(),

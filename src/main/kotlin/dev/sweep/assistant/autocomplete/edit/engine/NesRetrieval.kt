@@ -155,22 +155,12 @@ object NesRetrieval {
         val codeBlock: String,
         val blockStartOffset: Int,
         val isBlockAfterCursor: Boolean,
-        val diagnostic: EditorDiagnosticData?,
-    )
-
-    data class EditorDiagnosticData(
-        val line: Int,
-        val lineNumber: Int,
-        val startOffset: Int,
-        val endOffset: Int,
-        val severity: String,
-        val message: String,
     )
 
     /**
      * Find ranked retrieval candidate blocks, one per branch: deleted-line
-     * match, closest ERROR diagnostic, query-token match, and the
-     * after-cursor fallback. Deduped by block start offset, capped at 2 —
+     * match, query-token match, and the after-cursor fallback. Deduped by
+     * block start offset, capped at 2 —
      * consumed as context variants V2/V3 by the steering matrix.
      */
     fun findCandidateBlocks(
@@ -178,14 +168,13 @@ object NesRetrieval {
         recentChanges: String,
         cursorPosition: Int,
         blockSize: Int = 6,
-        editorDiagnostics: List<EditorDiagnosticData>? = null,
     ): List<RetrievalResult> {
         val candidates = mutableListOf<RetrievalResult>()
 
         // Deleted line match
         val deletedLines = extractDeletedLinesFromRecentChanges(recentChanges)
         findDeletedLineMatch(fileContents, deletedLines)?.let { (retrievedBlock, blockOffset) ->
-            candidates.add(RetrievalResult(retrievedBlock, blockOffset, false, null))
+            candidates.add(RetrievalResult(retrievedBlock, blockOffset, false))
         }
 
         // Tokenize file
@@ -220,32 +209,7 @@ object NesRetrieval {
             }
             .map { it.second }
 
-        // Check for closest error diagnostic
-        var closestError: EditorDiagnosticData? = null
-        if (editorDiagnostics != null) {
-            val filteredErrors = editorDiagnostics.filter {
-                it.severity == "ERROR" && abs(currentCursorLineNumber - it.lineNumber) > 10
-            }
-            closestError = filteredErrors.minByOrNull { abs(cursorPosition - it.startOffset) }
-        }
-
         val lines = fileContents.linesSplitKeepEnds()
-
-        if (closestError != null) {
-            var cumOffset = 0
-            var startLine = 0
-            for ((i, line) in lines.withIndex()) {
-                if (cumOffset + line.length > closestError.startOffset) {
-                    startLine = i
-                    break
-                }
-                cumOffset += line.length
-            }
-            val endLine = minOf(lines.size, startLine + 1)
-            val block = lines.subList(startLine, endLine).joinToString("")
-            val offset = lines.take(startLine).sumOf { it.length }
-            candidates.add(RetrievalResult(block, offset, false, closestError))
-        }
 
         if (queryTokenOffsets.isNotEmpty()) {
             val closestOffset = queryTokenOffsets.minByOrNull { abs(cursorPosition - it) }!!
@@ -262,7 +226,7 @@ object NesRetrieval {
             val endLine = minOf(lines.size, lineIndex + 1)
             val block = lines.subList(lineIndex, endLine).joinToString("")
             val offset = lines.take(lineIndex).sumOf { it.length }
-            candidates.add(RetrievalResult(block, offset, false, null))
+            candidates.add(RetrievalResult(block, offset, false))
         }
 
         // Fallback: block after cursor (always available as the last candidate)
@@ -277,7 +241,7 @@ object NesRetrieval {
         adjustedCursorPosition += suffixLines.take(blockSize).sumOf { it.length }
         val remainingLines = suffixLines.drop(blockSize)
         val fallbackBlock = remainingLines.take(blockSize).joinToString("")
-        candidates.add(RetrievalResult(fallbackBlock, adjustedCursorPosition, true, null))
+        candidates.add(RetrievalResult(fallbackBlock, adjustedCursorPosition, true))
 
         return candidates
             .filter { it.codeBlock.isNotEmpty() }
@@ -294,11 +258,10 @@ object NesRetrieval {
         recentChanges: String,
         cursorPosition: Int,
         blockSize: Int = 6,
-        editorDiagnostics: List<EditorDiagnosticData>? = null,
     ): RetrievalResult =
-        findCandidateBlocks(fileContents, recentChanges, cursorPosition, blockSize, editorDiagnostics)
+        findCandidateBlocks(fileContents, recentChanges, cursorPosition, blockSize)
             .firstOrNull()
-            ?: RetrievalResult("", 0, false, null)
+            ?: RetrievalResult("", 0, false)
 
     /** Split text into word and non-word tokens (preserving whitespace/punctuation). */
     private fun tokenizeWithBoundaries(text: String): List<String> {

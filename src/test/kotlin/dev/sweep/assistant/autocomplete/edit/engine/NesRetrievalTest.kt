@@ -1,7 +1,6 @@
 package dev.sweep.assistant.autocomplete.edit.engine
 
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -29,82 +28,20 @@ class NesRetrievalTest {
     }
 
     @Test
-    fun `diagnostic branch ranks before the fallback`() {
-        val file = fileWithLines(40)
-        val diagOffset = file.indexOf("val item35 = 35\n")
-        val diagnostic =
-            NesRetrieval.EditorDiagnosticData(
-                line = 35,
-                lineNumber = 34,
-                startOffset = diagOffset,
-                endOffset = diagOffset + 5,
-                severity = "ERROR",
-                message = "unresolved reference",
-            )
-
-        val candidates =
-            NesRetrieval.findCandidateBlocks(
-                file,
-                "",
-                cursorPosition = 0,
-                editorDiagnostics = listOf(diagnostic),
-            )
-
-        assertTrue(candidates.size >= 2)
-        assertEquals(diagOffset, candidates.first().blockStartOffset)
-        assertEquals(diagnostic, candidates.first().diagnostic)
-        assertTrue(candidates.all { it.codeBlock.isNotEmpty() })
-    }
-
-    @Test
     fun `candidates are deduped and capped at two`() {
         val file = fileWithLines(40)
-        val diagOffset = file.indexOf("val item35 = 35\n")
-        val diagnostic =
-            NesRetrieval.EditorDiagnosticData(
-                line = 35,
-                lineNumber = 34,
-                startOffset = diagOffset,
-                endOffset = diagOffset + 5,
-                severity = "ERROR",
-                message = "unresolved reference",
-            )
-
-        val candidates =
-            NesRetrieval.findCandidateBlocks(
-                file,
-                "",
-                cursorPosition = 0,
-                editorDiagnostics = listOf(diagnostic),
-            )
+        val candidates = NesRetrieval.findCandidateBlocks(file, "", cursorPosition = 0)
 
         assertEquals(candidates.map { it.blockStartOffset }.distinct().size, candidates.map { it.blockStartOffset }.size)
         assertTrue(candidates.size <= 2)
     }
 
     @Test
-    fun `best single match keeps legacy priority`() {
+    fun `best single match uses the fallback when nothing matches`() {
         val file = fileWithLines(40)
-        val diagOffset = file.indexOf("val item35 = 35\n")
-        val diagnostic =
-            NesRetrieval.EditorDiagnosticData(
-                line = 35,
-                lineNumber = 34,
-                startOffset = diagOffset,
-                endOffset = diagOffset + 5,
-                severity = "ERROR",
-                message = "unresolved reference",
-            )
+        val best = NesRetrieval.findBestMatchingBlock(file, "", cursorPosition = 0)
 
-        val best =
-            NesRetrieval.findBestMatchingBlock(
-                file,
-                "",
-                cursorPosition = 0,
-                editorDiagnostics = listOf(diagnostic),
-            )
-
-        assertNotNull(best)
-        assertEquals(diagOffset, best.blockStartOffset)
+        assertTrue(best.isBlockAfterCursor)
+        assertEquals(file.indexOf("val item8 = 8\n"), best.blockStartOffset)
     }
 }

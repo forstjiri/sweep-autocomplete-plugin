@@ -79,17 +79,6 @@ class NextEditAutocompleteClient(
                 )
             },
             recentChangesHighRes = request.recent_changes_high_res,
-            changesAboveCursor = request.changes_above_cursor,
-            editorDiagnostics = request.editor_diagnostics.map {
-                dev.sweep.assistant.autocomplete.edit.engine.NesRetrieval.EditorDiagnosticData(
-                    line = it.line,
-                    lineNumber = it.line - 1,
-                    startOffset = it.start_offset,
-                    endOffset = it.end_offset,
-                    severity = it.severity,
-                    message = it.message,
-                )
-            },
             steering = request.steering,
             automaticSteering = request.automatic_steering,
             avoidCompletions = request.avoid_completions,

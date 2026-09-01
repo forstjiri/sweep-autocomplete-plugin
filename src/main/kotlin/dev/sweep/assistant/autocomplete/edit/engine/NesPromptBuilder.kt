@@ -190,7 +190,6 @@ object NesPromptBuilder {
      * @param fileChunks Additional file chunks for context
      * @param retrievalChunks Retrieval chunks from similar code
      * @param recentChangesHighRes High-resolution recent changes
-     * @param changesAboveCursor Whether recent changes are above the cursor
      * @param forceGhostText Whether to force ghost text mode
      * @param useRemoteEndpoint Whether a remote endpoint is being used (affects prefill logic)
      */
@@ -205,7 +204,6 @@ object NesPromptBuilder {
         fileChunks: List<FileChunkData> = emptyList(),
         retrievalChunks: List<FileChunkData> = emptyList(),
         recentChangesHighRes: String = "",
-        changesAboveCursor: Boolean = false,
         steering: String? = null,
         forceGhostText: Boolean = false,
         useRemoteEndpoint: Boolean = false,
@@ -248,17 +246,6 @@ object NesPromptBuilder {
             val regexBasedPrefill = if (pretokens.size > 1) pretokens.dropLast(1).joinToString("") else ""
             prefill = regexBasedPrefill
             forcedPrefix = cleanedCodeBlock.substring(0, relativeCursorPosition).removePrefix(prefill)
-        } else if (changesAboveCursor) {
-            forcedPrefix = ""
-            val prefillFull = cleanedCodeBlock.substring(0, relativeCursorPosition)
-            val prefillLines = prefillFull.linesSplitKeepEnds()
-            val numLinesAbove = 1
-            var beforeSplit = prefillLines.take(numLinesAbove).joinToString("")
-            val afterSplit = prefillLines.drop(numLinesAbove).joinToString("")
-            for (char in afterSplit) {
-                if (char == '\n') beforeSplit += "\n" else break
-            }
-            prefill = beforeSplit
         } else {
             prefill = ""
             forcedPrefix = ""

@@ -139,166 +139,6 @@ private fun invokeLaterIfGatewayModeClient(
     }
 }
 
-/**
- * Single-entry cache for definition chunks to avoid blocking autocomplete requests.
- * The cache is keyed by line number, document line count, and a prefix of the current line.
- */
-private class DefinitionChunkCache(
-    private val ioScope: CoroutineScope,
-    private val getDefinitions: (EditorState) -> List<FileChunk>,
-) {
-    companion object {
-        const val MIN_PREFIX_MATCH_LENGTH = 5
-    }
-
-    private data class CacheKey(
-        val lineNumber: Int,
-        val documentLineCount: Int,
-        val linePrefix: String,
-        val filePath: String,
-    )
-
-    private data class CacheEntry(
-        val key: CacheKey,
-        val job: Job,
-        val result: CompletableDeferred<List<FileChunk>>,
-    )
-
-    @Volatile
-    private var cacheEntry: CacheEntry? = null
-
-    /**
-     * Creates a cache key from the current editor state.
-     * Uses pre-computed currentLinePrefix to avoid accessing full documentText.
-     */
-    private fun createCacheKey(editorState: EditorState): CacheKey =
-        CacheKey(
-            lineNumber = editorState.line,
-            documentLineCount = editorState.documentLineCount,
-            linePrefix = editorState.currentLinePrefix,
-            filePath = editorState.filePath,
-        )
-
-    /**
-     * Checks if the cache key is still valid for the given editor state.
-     * Returns true if the cache entry is usable.
-     */
-    private fun isCacheKeyValid(
-        cachedKey: CacheKey,
-        currentKey: CacheKey,
-    ): Boolean {
-        // Must be same file
-        if (cachedKey.filePath != currentKey.filePath) return false
-
-        // Line number must match, considering document size changes
-        if (cachedKey.lineNumber != currentKey.lineNumber) return false
-
-        // Document line count shouldn't have changed drastically
-        if (abs(cachedKey.documentLineCount - currentKey.documentLineCount) > 5) return false
-
-        // Check prefix match - the current prefix should start with the cached prefix
-        // or vice versa (for when user is typing)
-        val shorterPrefix = minOf(cachedKey.linePrefix.length, currentKey.linePrefix.length)
-        if (shorterPrefix >= MIN_PREFIX_MATCH_LENGTH) {
-            val cachedPrefixTruncated = cachedKey.linePrefix.take(shorterPrefix)
-            val currentPrefixTruncated = currentKey.linePrefix.take(shorterPrefix)
-            if (cachedPrefixTruncated != currentPrefixTruncated) return false
-        } else if (cachedKey.linePrefix.isNotEmpty() && currentKey.linePrefix.isNotEmpty()) {
-            // For short prefixes, they should match exactly
-            if (!currentKey.linePrefix.startsWith(cachedKey.linePrefix) &&
-                !cachedKey.linePrefix.startsWith(currentKey.linePrefix)
-            ) {
-                return false
-            }
-        }
-
-        return true
-    }
-
-    /**
-     * Starts prefetching definition chunks for the given editor state.
-     * This should be called when the debouncer triggers.
-     */
-    fun prefetch(editorState: EditorState) {
-        val currentKey = createCacheKey(editorState)
-
-        // Check if current cache entry is still valid
-        cacheEntry?.let { entry ->
-            if (isCacheKeyValid(entry.key, currentKey)) {
-                // Cache is still valid, no need to prefetch
-                return
-            }
-            // Invalidate old cache
-            entry.job.cancel()
-        }
-
-        // Start new prefetch
-        val deferred = CompletableDeferred<List<FileChunk>>()
-        val job =
-            ioScope.launch {
-                try {
-                    val result =
-                        runCatching {
-                            getDefinitions(editorState)
-                        }.getOrElse { emptyList() }
-                    deferred.complete(result)
-                } catch (e: CancellationException) {
-                    deferred.cancel(e)
-                    throw e
-                } catch (e: Exception) {
-                    deferred.complete(emptyList())
-                }
-            }
-
-        cacheEntry = CacheEntry(currentKey, job, deferred)
-    }
-
-    /**
-     * Gets definition chunks, using the cache if valid, otherwise fetching synchronously.
-     * Returns the definition chunks.
-     */
-    suspend fun getOrFetch(editorState: EditorState): List<FileChunk> {
-        val currentKey = createCacheKey(editorState)
-
-        cacheEntry?.let { entry ->
-            if (isCacheKeyValid(entry.key, currentKey)) {
-                // Cache is valid - wait for result if still computing, or return cached result
-                return try {
-                    withTimeout(2000L) {
-                        entry.result.await()
-                    }
-                } catch (e: Exception) {
-                    // Timeout or cancellation - fall through to sync fetch
-                    entry.job.cancel()
-                    return fetchSync(editorState)
-                }
-            }
-            // Cache is invalid - cancel and fetch sync
-            entry.job.cancel()
-            return fetchSync(editorState)
-        }
-
-        // No cache entry exists
-        return fetchSync(editorState)
-    }
-
-    /**
-     * Synchronously fetches definition chunks (current behavior).
-     */
-    private fun fetchSync(editorState: EditorState): List<FileChunk> =
-        runCatching {
-            getDefinitions(editorState)
-        }.getOrElse { emptyList() }
-
-    /**
-     * Invalidates the cache.
-     */
-    fun invalidate() {
-        cacheEntry?.job?.cancel()
-        cacheEntry = null
-    }
-}
-
 @Service(Service.Level.PROJECT)
 class RecentEditsTracker(
     private val project: Project,
@@ -474,8 +314,6 @@ class RecentEditsTracker(
     private var lookupUICustomizer: LookupUICustomizer? = null
     private val entityUsageSearchService = EntityUsageSearchService(project)
     private val newMethodContextService = NewMethodContextService(project)
-
-    private var clientIp: String? = null
 
     private var lastAcceptedTime: Long = System.currentTimeMillis()
 
@@ -1218,8 +1056,6 @@ class RecentEditsTracker(
             }
         }
 
-        // Public IP is no longer reported (chat-era telemetry); keep clientIp null.
-        clientIp = null
     }
 
     /**
@@ -2283,7 +2119,6 @@ class RecentEditsTracker(
     ): NextEditAutocompleteResponse? {
         try {
             if (shouldAbort()) return null
-            val repoName = userSpecificRepoName(project)
             val originalFileContents = originalDocumentText
             if (isFileTooLarge(fileContents, project)) {
                 logger.warn("File is too large to fetch next edit autocomplete")
@@ -2357,7 +2192,6 @@ class RecentEditsTracker(
 
             val request =
                 NextEditAutocompleteRequest(
-                    repo_name = repoName,
                     file_path = relPath,
                     file_contents = fileContents,
                     recent_changes =
@@ -2376,9 +2210,6 @@ class RecentEditsTracker(
                     file_chunks = allFileChunks,
                     retrieval_chunks = retrievalChunks,
                     recent_user_actions = recentUserActions.toList(),
-                    multiple_suggestions = true,
-                    privacy_mode_enabled = SweepMetaData.getInstance().privacyModeEnabled,
-                    client_ip = clientIp,
                     recent_changes_high_res =
                         recentEditsHighRes
                             .toList()
@@ -2387,8 +2218,6 @@ class RecentEditsTracker(
                             ).map { it.formattedDiff }
                             .filter { it.length <= MAX_DIFF_HUNK_SIZE }
                             .joinToString("\n"),
-                    changes_above_cursor = false,
-                    editor_diagnostics = emptyList(),
                     steering = steering,
                     automatic_steering = autoSteering,
                     avoid_completions = avoidCompletions.take(10),

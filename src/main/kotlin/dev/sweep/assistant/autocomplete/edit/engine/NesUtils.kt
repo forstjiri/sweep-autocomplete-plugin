@@ -387,13 +387,24 @@ object NesUtils {
     }
 
     /**
-     * Sampling temperatures for one NES request. Plain typing is a single
-     * greedy pass; steered requests ("next suggestion") climb a temperature
-     * ladder so sampling can escape the deterministic continuation of the
-     * edit they were asked not to repeat (parity with the Python library).
+     * Sampling temperatures per steering matrix round. Each round runs the
+     * full context-variant list, so a steered request tries every context at
+     * 0.35 before anything gets a hotter 0.8 retry (context changes beat
+     * temperature changes). Plain typing stays a single greedy pass.
      */
-    fun steeringTemperatures(steered: Boolean): List<Float> =
-        if (steered) listOf(0.35f, 0.8f, 1.05f) else listOf(0.0f)
+    fun steeringMatrixTemperatures(): List<Float> = listOf(0.35f, 0.8f)
+
+    /**
+     * True when every completion is a pure insertion exactly at the cursor —
+     * ghost text. Such completions are exempt from revert filtering:
+     * re-completing text the user just deleted is what autocomplete is for.
+     */
+    fun isGhostTextInsertionOnly(
+        completions: List<NesCompletionParser.AutocompleteResult>,
+        cursorPosition: Int,
+    ): Boolean =
+        completions.isNotEmpty() &&
+            completions.all { it.startIndex == it.endIndex && it.startIndex == cursorPosition }
 
     /**
      * Port of the Python library's _matches_avoided(): a generated completion

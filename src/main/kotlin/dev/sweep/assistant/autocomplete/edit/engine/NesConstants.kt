@@ -9,6 +9,10 @@ object NesConstants {
     const val NUM_LINES_BEFORE = 2
     const val NUM_LINES_AFTER = 5
 
+    // Wider window for the steering matrix's V3 fallback context
+    const val WIDER_NUM_LINES_BEFORE = 6
+    const val WIDER_NUM_LINES_AFTER = 12
+
     // Token estimation
     const val CHARS_PER_TOKEN = 3.5
 

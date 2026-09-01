@@ -49,13 +49,18 @@ object NesPromptBuilder {
      * Extract the code block surrounding the cursor position.
      * Ported from Python get_block_at_cursor().
      */
-    fun getBlockAtCursor(fileContents: String, cursorPosition: Int): BlockAtCursor {
+    fun getBlockAtCursor(
+        fileContents: String,
+        cursorPosition: Int,
+        numLinesBefore: Int = NUM_LINES_BEFORE,
+        numLinesAfter: Int = NUM_LINES_AFTER,
+    ): BlockAtCursor {
         val lines = fileContents.linesSplitKeepEnds()
         val cursorLine = NesUtils.getLineNumberFromPosition(fileContents, cursorPosition)
         val (codeBlock, prefix, suffix) = getBlockAroundCursorLine(
-            lines, cursorLine, NUM_LINES_BEFORE, NUM_LINES_AFTER
+            lines, cursorLine, numLinesBefore, numLinesAfter
         )
-        val blockStartLine = max(0, cursorLine - NUM_LINES_BEFORE)
+        val blockStartLine = max(0, cursorLine - numLinesBefore)
         val blockStartIndex = lines.take(blockStartLine).sumOf { it.length }
 
         val truncatedBlock = truncateCodeBlockByTokens(codeBlock)

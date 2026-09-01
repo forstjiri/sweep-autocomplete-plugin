@@ -5,6 +5,8 @@ import dev.sweep.assistant.autocomplete.edit.engine.NesCompletionParser.Autocomp
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.MAX_RETRIEVAL_CHUNK_SIZE_LINES
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.NUM_LINES_AFTER
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.NUM_LINES_BEFORE
+import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.WIDER_NUM_LINES_AFTER
+import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.WIDER_NUM_LINES_BEFORE
 import java.util.UUID
 import java.util.Collections
 import kotlin.math.max
@@ -92,109 +94,212 @@ class NextEditAutocompleteEngine(
         val forceGhostText = request.recentUserActions.isEmpty() ||
             request.recentUserActions.lastOrNull()?.actionType == "INSERT_CHAR"
 
-        // First pass: autocomplete at cursor
+        // Steering matrix: steered requests walk context variants (V1 cursor
+        // block, V2/V3 retrieval/expanded blocks) at 0.35, then again at 0.8.
+        // Context changes beat temperature changes, so variants come first.
+        // Plain typing keeps today's behavior: cursor block, then one
+        // retrieval pass, both greedy.
+        val steered = request.steering != null || request.avoidCompletions.isNotEmpty()
+        val rounds = if (steered) NesUtils.steeringMatrixTemperatures() else listOf(0.0f)
+        val candidates =
+            buildPassCandidates(request, block, cursorPosition, limitedRetrievalChunks, steered)
+
         val startTime = System.currentTimeMillis()
-        val firstPassResult = runAutocompletePass(
-            filePath = request.filePath,
-            fileContents = fileContents,
-            originalFileContents = originalFileContents,
-            recentChanges = request.recentChanges,
-            cursorPosition = cursorPosition,
-            codeBlock = block.codeBlock,
-            prefix = block.prefix,
-            suffix = block.suffix,
-            blockStartIndex = block.blockStartIndex,
-            autocompleteId = autocompleteId,
-            fileChunks = fileChunks,
-            retrievalChunks = limitedRetrievalChunks,
-            recentChangesHighRes = request.recentChangesHighRes,
-            changesAboveCursor = request.changesAboveCursor,
-            steering = request.steering,
-            avoidCompletions = request.avoidCompletions,
-            forceGhostText = forceGhostText,
-        )
+        var lastAvoided: List<AutocompleteResult>? = null
 
-        if (firstPassResult != null && firstPassResult.isNotEmpty() &&
-            firstPassResult.any { it.completion.trim('\n').isNotEmpty() || it.startIndex != it.endIndex }
-        ) {
-            val elapsed = System.currentTimeMillis() - startTime
-            return NesResponse(firstPassResult, elapsed, autocompleteId)
-        }
-
-        // Second pass: retrieval-based autocomplete
-        if (request.recentChanges.isNotEmpty()) {
-            val retrievalResult = NesRetrieval.findBestMatchingBlock(
-                fileContents, request.recentChanges, cursorPosition,
-                blockSize = 6, editorDiagnostics = request.editorDiagnostics,
-            )
-
-            if (retrievalResult.codeBlock.isNotEmpty()) {
-                val prefixLines = fileContents.substring(0, retrievalResult.blockStartOffset)
-                    .linesSplitKeepEnds()
-                val retrievedPrefix = prefixLines.takeLast(NUM_LINES_BEFORE).joinToString("")
-
-                val numRetrievedLines = retrievalResult.codeBlock.lines().size
-                val numSuffixLines = max(0, NUM_LINES_AFTER + 1 - numRetrievedLines)
-                val afterBlock = fileContents.substring(
-                    min(fileContents.length, retrievalResult.blockStartOffset + retrievalResult.codeBlock.length)
-                )
-                val retrievedSuffix = afterBlock.linesSplitKeepEnds().take(numSuffixLines).joinToString("")
-
-                val cursorInBlock = retrievalResult.blockStartOffset +
-                    retrievalResult.codeBlock.linesSplitKeepEnds().firstOrNull()?.length.let { it ?: 0 }
-
-                val fullBlock = retrievedPrefix + NesPromptBuilder.truncateCodeBlockByTokensPublic(
-                    retrievalResult.codeBlock + retrievedSuffix
-                )
-
-                if (!NesUtils.shouldDisableForCodeBlock(fullBlock)) {
-                    // Add diagnostic as retrieval chunk if present
-                    val extraChunks = if (retrievalResult.diagnostic != null) {
-                        val diagLine = fileContents.lines().getOrElse(retrievalResult.diagnostic.lineNumber) { "" }
-                        listOf(
-                            NesPromptBuilder.FileChunkData(
-                                "diagnostics",
-                                "${retrievalResult.diagnostic.message} at line ${retrievalResult.diagnostic.lineNumber}:\n$diagLine",
-                                1, 2,
-                            )
-                        ) + limitedRetrievalChunks
-                    } else {
-                        limitedRetrievalChunks
-                    }
-
-                    val secondPassResult = runAutocompletePass(
+        for ((roundIndex, temperature) in rounds.withIndex()) {
+            for ((variantIndex, candidate) in candidates.withIndex()) {
+                val outcome =
+                    runAutocompletePass(
                         filePath = request.filePath,
                         fileContents = fileContents,
                         originalFileContents = originalFileContents,
                         recentChanges = request.recentChanges,
-                        cursorPosition = cursorInBlock,
-                        codeBlock = fullBlock,
-                        prefix = retrievedPrefix,
-                        suffix = retrievedSuffix,
-                        blockStartIndex = retrievalResult.blockStartOffset,
+                        cursorPosition = candidate.cursorPosition,
+                        codeBlock = candidate.codeBlock,
+                        prefix = candidate.prefix,
+                        suffix = candidate.suffix,
+                        blockStartIndex = candidate.blockStartIndex,
                         autocompleteId = autocompleteId,
                         fileChunks = fileChunks,
-                        retrievalChunks = extraChunks,
+                        retrievalChunks = candidate.retrievalChunks,
                         recentChangesHighRes = request.recentChangesHighRes,
                         changesAboveCursor = request.changesAboveCursor,
                         steering = request.steering,
                         avoidCompletions = request.avoidCompletions,
+                        temperature = temperature,
                         forceGhostText = forceGhostText,
                     )
-
-                    if (secondPassResult != null && secondPassResult.isNotEmpty() &&
-                        request.recentChanges.isNotEmpty() &&
-                        secondPassResult.first().completion.trim().isNotEmpty()
-                    ) {
-                        val elapsed = System.currentTimeMillis() - startTime
-                        return NesResponse(secondPassResult, elapsed, autocompleteId)
-                    }
+                when (outcome) {
+                    is AttemptOutcome.Success ->
+                        return NesResponse(
+                            outcome.completions,
+                            System.currentTimeMillis() - startTime,
+                            autocompleteId,
+                        )
+                    is AttemptOutcome.Avoided -> lastAvoided = outcome.completions
+                    else -> {}
+                }
+                if (steered) {
+                    logger.info(
+                        "NES: steering matrix variant=V${variantIndex + 1} " +
+                            "round=${roundIndex + 1}/${rounds.size} temperature=$temperature — no fresh result",
+                    )
                 }
             }
         }
 
-        val elapsed = System.currentTimeMillis() - startTime
-        return emptyResponse(autocompleteId, elapsed)
+        // The whole matrix is exhausted: hand back the last avoid-matching
+        // result so the client-side dedup + cached-completion cycling can take
+        // over (Python parity for the final ladder attempt).
+        lastAvoided?.let {
+            logger.info("NES: returning ${it.size} completions (avoided match, matrix exhausted)")
+            return NesResponse(it, System.currentTimeMillis() - startTime, autocompleteId)
+        }
+        return emptyResponse(autocompleteId, System.currentTimeMillis() - startTime)
+    }
+
+    /** One NES inference input: a code block context plus its cursor and chunks. */
+    private data class PassCandidate(
+        val codeBlock: String,
+        val prefix: String,
+        val suffix: String,
+        val cursorPosition: Int,
+        val blockStartIndex: Int,
+        val retrievalChunks: List<NesPromptBuilder.FileChunkData>,
+    )
+
+    /**
+     * Context variants for the steering matrix:
+     * - V1: block at cursor (always)
+     * - V2: best retrieval match (needs recent changes)
+     * - V3: second retrieval match, or a wider window around the cursor
+     * Automatic requests keep V1 + V2 only.
+     */
+    private fun buildPassCandidates(
+        request: NesRequest,
+        cursorBlock: NesPromptBuilder.BlockAtCursor,
+        cursorPosition: Int,
+        limitedRetrievalChunks: List<NesPromptBuilder.FileChunkData>,
+        steered: Boolean,
+    ): List<PassCandidate> {
+        val candidates =
+            mutableListOf(
+                PassCandidate(
+                    codeBlock = cursorBlock.codeBlock,
+                    prefix = cursorBlock.prefix,
+                    suffix = cursorBlock.suffix,
+                    cursorPosition = cursorPosition,
+                    blockStartIndex = cursorBlock.blockStartIndex,
+                    retrievalChunks = limitedRetrievalChunks,
+                ),
+            )
+
+        if (request.recentChanges.isEmpty()) {
+            if (steered) {
+                buildWiderCursorCandidate(request.fileContents, cursorPosition, limitedRetrievalChunks, cursorBlock.codeBlock)
+                    ?.let { candidates.add(it) }
+            }
+            return candidates
+        }
+
+        val maxRetrievalVariants = if (steered) 2 else 1
+        val retrievalVariants =
+            NesRetrieval
+                .findCandidateBlocks(
+                    request.fileContents,
+                    request.recentChanges,
+                    cursorPosition,
+                    blockSize = 6,
+                    editorDiagnostics = request.editorDiagnostics,
+                )
+                .filter { it.blockStartOffset != cursorBlock.blockStartIndex }
+                .take(maxRetrievalVariants)
+                .mapNotNull { buildRetrievalCandidate(request.fileContents, it, limitedRetrievalChunks) }
+        candidates.addAll(retrievalVariants)
+
+        // Not enough distinct retrieval variants — widen the window as V3.
+        if (steered && candidates.size < 3) {
+            buildWiderCursorCandidate(request.fileContents, cursorPosition, limitedRetrievalChunks, cursorBlock.codeBlock)
+                ?.let { candidates.add(it) }
+        }
+        return candidates
+    }
+
+    /** Builds the prompt inputs for one retrieval-matched context variant. */
+    private fun buildRetrievalCandidate(
+        fileContents: String,
+        retrieval: NesRetrieval.RetrievalResult,
+        limitedRetrievalChunks: List<NesPromptBuilder.FileChunkData>,
+    ): PassCandidate? {
+        val prefixLines = fileContents.substring(0, retrieval.blockStartOffset)
+            .linesSplitKeepEnds()
+        val retrievedPrefix = prefixLines.takeLast(NUM_LINES_BEFORE).joinToString("")
+
+        val numRetrievedLines = retrieval.codeBlock.lines().size
+        val numSuffixLines = max(0, NUM_LINES_AFTER + 1 - numRetrievedLines)
+        val afterBlock = fileContents.substring(
+            min(fileContents.length, retrieval.blockStartOffset + retrieval.codeBlock.length)
+        )
+        val retrievedSuffix = afterBlock.linesSplitKeepEnds().take(numSuffixLines).joinToString("")
+
+        val cursorInBlock = retrieval.blockStartOffset +
+            retrieval.codeBlock.linesSplitKeepEnds().firstOrNull()?.length.let { it ?: 0 }
+
+        val fullBlock = retrievedPrefix + NesPromptBuilder.truncateCodeBlockByTokensPublic(
+            retrieval.codeBlock + retrievedSuffix
+        )
+        if (NesUtils.shouldDisableForCodeBlock(fullBlock)) return null
+
+        // Add diagnostic as retrieval chunk if present
+        val extraChunks =
+            if (retrieval.diagnostic != null) {
+                val diagLine = fileContents.lines().getOrElse(retrieval.diagnostic.lineNumber) { "" }
+                listOf(
+                    NesPromptBuilder.FileChunkData(
+                        "diagnostics",
+                        "${retrieval.diagnostic.message} at line ${retrieval.diagnostic.lineNumber}:\n$diagLine",
+                        1, 2,
+                    )
+                ) + limitedRetrievalChunks
+            } else {
+                limitedRetrievalChunks
+            }
+
+        return PassCandidate(
+            codeBlock = fullBlock,
+            prefix = retrievedPrefix,
+            suffix = retrievedSuffix,
+            cursorPosition = cursorInBlock,
+            blockStartIndex = retrieval.blockStartOffset,
+            retrievalChunks = extraChunks,
+        )
+    }
+
+    /** V3 fallback: the same edit position seen through a wider window. */
+    private fun buildWiderCursorCandidate(
+        fileContents: String,
+        cursorPosition: Int,
+        limitedRetrievalChunks: List<NesPromptBuilder.FileChunkData>,
+        cursorBlockCode: String,
+    ): PassCandidate? {
+        val wider =
+            NesPromptBuilder.getBlockAtCursor(
+                fileContents,
+                cursorPosition,
+                numLinesBefore = WIDER_NUM_LINES_BEFORE,
+                numLinesAfter = WIDER_NUM_LINES_AFTER,
+            )
+        if (wider.codeBlock == cursorBlockCode) return null
+        if (NesUtils.shouldDisableForCodeBlock(wider.codeBlock)) return null
+        return PassCandidate(
+            codeBlock = wider.codeBlock,
+            prefix = wider.prefix,
+            suffix = wider.suffix,
+            cursorPosition = cursorPosition,
+            blockStartIndex = wider.blockStartIndex,
+            retrievalChunks = limitedRetrievalChunks,
+        )
     }
 
     private fun runAutocompletePass(
@@ -214,9 +319,10 @@ class NextEditAutocompleteEngine(
         changesAboveCursor: Boolean,
         steering: String?,
         avoidCompletions: List<String>,
+        temperature: Float,
         forceGhostText: Boolean,
-    ): List<AutocompleteResult>? {
-        if (codeBlock.isEmpty()) return null
+    ): AttemptOutcome {
+        if (codeBlock.isEmpty()) return AttemptOutcome.Filtered("empty_code_block")
 
         val promptResult = NesPromptBuilder.buildPrompt(
             filePath = filePath,
@@ -237,7 +343,7 @@ class NextEditAutocompleteEngine(
             useRemoteEndpoint = false,  // local llama-server
         )
 
-        if (promptResult.formattedPrompt.isEmpty()) return null
+        if (promptResult.formattedPrompt.isEmpty()) return AttemptOutcome.Filtered("empty_prompt")
 
         // Log prompt details for debugging
         logger.info("NES: prompt length=${promptResult.formattedPrompt.length} chars, " +
@@ -249,59 +355,17 @@ class NextEditAutocompleteEngine(
         val promptTail = promptResult.formattedPrompt.takeLast(300)
         logger.info("NES: prompt tail: ...${promptTail.replace("\n", "\\n")}")
 
-        // Temperature ladder: steered requests ("next suggestion") retry with
-        // progressively hotter sampling so they can escape the deterministic
-        // continuation they were asked not to repeat (parity with the Python
-        // library). Plain typing stays a single greedy pass for latency.
-        val temperatures = NesUtils.steeringTemperatures(
-            steered = steering != null || avoidCompletions.isNotEmpty(),
-        )
         // Allow output up to 2x the code block size (room for insertions) + 20 lines buffer
         val maxOutputChars = (promptResult.cleanedCodeBlock.length * 2) + (20 * 80)
 
-        for ((index, temperature) in temperatures.withIndex()) {
-            val isLastAttempt = index == temperatures.lastIndex
-            when (
-                val outcome =
-                    generateAndProcessAttempt(
-                        promptResult = promptResult,
-                        fileContents = fileContents,
-                        cursorPosition = cursorPosition,
-                        autocompleteId = autocompleteId,
-                        maxOutputChars = maxOutputChars,
-                        temperature = temperature,
-                        avoidCompletions = avoidCompletions,
-                    )
-            ) {
-                is AttemptOutcome.Aborted -> return null
-                is AttemptOutcome.EmptyText ->
-                    if (isLastAttempt) return null else logSteeringRetry(index, temperatures.size, temperature, outcome.reason)
-                is AttemptOutcome.Filtered ->
-                    if (isLastAttempt) return null else logSteeringRetry(index, temperatures.size, temperature, outcome.reason)
-                is AttemptOutcome.Avoided -> {
-                    // Valid hunks, but the generation repeats an avoided suggestion.
-                    // The last ladder attempt is still returned — the client-side
-                    // dedup + cached-completion cycling takes over from there.
-                    if (isLastAttempt) {
-                        logger.info("NES: returning ${outcome.completions.size} completions (avoided match, ladder exhausted)")
-                        return outcome.completions
-                    }
-                    logSteeringRetry(index, temperatures.size, temperature, "matches_avoided")
-                }
-                is AttemptOutcome.Success -> return outcome.completions
-            }
-        }
-        return null
-    }
-
-    private fun logSteeringRetry(
-        attemptIndex: Int,
-        totalAttempts: Int,
-        temperature: Float,
-        reason: String,
-    ) {
-        logger.info(
-            "NES: steering retry attempt ${attemptIndex + 1}/$totalAttempts temperature=$temperature reason=$reason",
+        return generateAndProcessAttempt(
+            promptResult = promptResult,
+            fileContents = fileContents,
+            cursorPosition = cursorPosition,
+            autocompleteId = autocompleteId,
+            maxOutputChars = maxOutputChars,
+            temperature = temperature,
+            avoidCompletions = avoidCompletions,
         )
     }
 
@@ -418,14 +482,19 @@ class NextEditAutocompleteEngine(
             return AttemptOutcome.Filtered("no_hunks")
         }
 
-        // Check for reverts
-        val codeBlockWithCompletions = NesCompletionParser.applyCompletionsToCodeBlock(
-            completions, fileContents, promptResult.cleanedCodeBlock,
-        )
-        for (section in promptResult.prevSections) {
-            if (NesUtils.isEqualIgnoringNewlines(codeBlockWithCompletions, section)) {
-                logger.warn("NES: filtered — revert detected")
-                return AttemptOutcome.Filtered("revert")
+        // Check for reverts — but pure insertions at the cursor are ghost
+        // text: re-completing text the user just deleted is exactly what
+        // autocomplete is for. (The Python library's comment intended ghost
+        // texts to be exempt; the port filtered everything.)
+        if (!NesUtils.isGhostTextInsertionOnly(completions, cursorPosition)) {
+            val codeBlockWithCompletions = NesCompletionParser.applyCompletionsToCodeBlock(
+                completions, fileContents, promptResult.cleanedCodeBlock,
+            )
+            for (section in promptResult.prevSections) {
+                if (NesUtils.isEqualIgnoringNewlines(codeBlockWithCompletions, section)) {
+                    logger.warn("NES: filtered — revert detected")
+                    return AttemptOutcome.Filtered("revert")
+                }
             }
         }
 

@@ -183,21 +183,24 @@ object NesRetrieval {
     )
 
     /**
-     * Find the best matching code block for retrieval-based autocomplete.
-     * Ported from Python find_best_matching_block().
+     * Find ranked retrieval candidate blocks, one per branch: deleted-line
+     * match, closest ERROR diagnostic, query-token match, and the
+     * after-cursor fallback. Deduped by block start offset, capped at 2 —
+     * consumed as context variants V2/V3 by the steering matrix.
      */
-    fun findBestMatchingBlock(
+    fun findCandidateBlocks(
         fileContents: String,
         recentChanges: String,
         cursorPosition: Int,
         blockSize: Int = 6,
         editorDiagnostics: List<EditorDiagnosticData>? = null,
-    ): RetrievalResult {
-        // Try deleted line match first
+    ): List<RetrievalResult> {
+        val candidates = mutableListOf<RetrievalResult>()
+
+        // Deleted line match
         val deletedLines = extractDeletedLinesFromRecentChanges(recentChanges)
-        val deletedLineMatch = findDeletedLineMatch(fileContents, deletedLines)
-        if (deletedLineMatch != null) {
-            return RetrievalResult(deletedLineMatch.first, deletedLineMatch.second, false, null)
+        findDeletedLineMatch(fileContents, deletedLines)?.let { (retrievedBlock, blockOffset) ->
+            candidates.add(RetrievalResult(retrievedBlock, blockOffset, false, null))
         }
 
         // Tokenize file
@@ -256,8 +259,10 @@ object NesRetrieval {
             val endLine = minOf(lines.size, startLine + 1)
             val block = lines.subList(startLine, endLine).joinToString("")
             val offset = lines.take(startLine).sumOf { it.length }
-            return RetrievalResult(block, offset, false, closestError)
-        } else if (queryTokenOffsets.isNotEmpty()) {
+            candidates.add(RetrievalResult(block, offset, false, closestError))
+        }
+
+        if (queryTokenOffsets.isNotEmpty()) {
             val closestOffset = queryTokenOffsets.minByOrNull { abs(cursorPosition - it) }!!
 
             var lineIndex = 0
@@ -272,24 +277,43 @@ object NesRetrieval {
             val endLine = minOf(lines.size, lineIndex + 1)
             val block = lines.subList(lineIndex, endLine).joinToString("")
             val offset = lines.take(lineIndex).sumOf { it.length }
-            return RetrievalResult(block, offset, false, null)
-        } else {
-            // Fallback: block after cursor
-            var suffix = fileContents.substring(cursorPosition)
-            val suffixStart = suffix.indexOf('\n')
-            var adjustedCursorPosition = cursorPosition
-            if (suffixStart != -1) {
-                suffix = suffix.substring(suffixStart + 1)
-                adjustedCursorPosition += suffixStart + 1
-            }
-            val suffixLines = suffix.linesSplitKeepEnds()
-            adjustedCursorPosition += suffixLines.take(blockSize).sumOf { it.length }
-            val remainingLines = suffixLines.drop(blockSize)
-            val fallbackBlock = remainingLines.take(blockSize).joinToString("")
-
-            return RetrievalResult(fallbackBlock, adjustedCursorPosition, true, null)
+            candidates.add(RetrievalResult(block, offset, false, null))
         }
+
+        // Fallback: block after cursor (always available as the last candidate)
+        var suffix = fileContents.substring(cursorPosition)
+        val suffixStart = suffix.indexOf('\n')
+        var adjustedCursorPosition = cursorPosition
+        if (suffixStart != -1) {
+            suffix = suffix.substring(suffixStart + 1)
+            adjustedCursorPosition += suffixStart + 1
+        }
+        val suffixLines = suffix.linesSplitKeepEnds()
+        adjustedCursorPosition += suffixLines.take(blockSize).sumOf { it.length }
+        val remainingLines = suffixLines.drop(blockSize)
+        val fallbackBlock = remainingLines.take(blockSize).joinToString("")
+        candidates.add(RetrievalResult(fallbackBlock, adjustedCursorPosition, true, null))
+
+        return candidates
+            .filter { it.codeBlock.isNotEmpty() }
+            .distinctBy { it.blockStartOffset }
+            .take(2)
     }
+
+    /**
+     * Find the best matching code block for retrieval-based autocomplete.
+     * Ported from Python find_best_matching_block().
+     */
+    fun findBestMatchingBlock(
+        fileContents: String,
+        recentChanges: String,
+        cursorPosition: Int,
+        blockSize: Int = 6,
+        editorDiagnostics: List<EditorDiagnosticData>? = null,
+    ): RetrievalResult =
+        findCandidateBlocks(fileContents, recentChanges, cursorPosition, blockSize, editorDiagnostics)
+            .firstOrNull()
+            ?: RetrievalResult("", 0, false, null)
 
     /** Split text into word and non-word tokens (preserving whitespace/punctuation). */
     private fun tokenizeWithBoundaries(text: String): List<String> {

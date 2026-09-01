@@ -277,13 +277,27 @@ class NesUtilsTest {
     // --- steering helpers ---
 
     @Test
-    fun `steeringTemperatures steered climbs the ladder`() {
-        assertEquals(listOf(0.35f, 0.8f, 1.05f), NesUtils.steeringTemperatures(steered = true))
+    fun `steeringMatrixTemperatures returns context rounds`() {
+        assertEquals(listOf(0.35f, 0.8f), NesUtils.steeringMatrixTemperatures())
     }
 
     @Test
-    fun `steeringTemperatures plain typing is greedy single shot`() {
-        assertEquals(listOf(0.0f), NesUtils.steeringTemperatures(steered = false))
+    fun `isGhostTextInsertionOnly detects pure insertions at cursor`() {
+        val insertion = NesCompletionParser.AutocompleteResult(10, 10, "tInCart", 1.0f, "id1")
+        val deletion = NesCompletionParser.AutocompleteResult(10, 15, "", 1.0f, "id2")
+        val elsewhere = NesCompletionParser.AutocompleteResult(5, 8, "x", 1.0f, "id3")
+
+        assertTrue(NesUtils.isGhostTextInsertionOnly(listOf(insertion), cursorPosition = 10))
+        assertTrue(
+            NesUtils.isGhostTextInsertionOnly(
+                listOf(insertion, insertion.copy(autocompleteId = "id4")),
+                cursorPosition = 10,
+            )
+        )
+        // replacement hunk, insertion elsewhere, empty list — not ghost text
+        assertFalse(NesUtils.isGhostTextInsertionOnly(listOf(deletion), cursorPosition = 10))
+        assertFalse(NesUtils.isGhostTextInsertionOnly(listOf(elsewhere), cursorPosition = 10))
+        assertFalse(NesUtils.isGhostTextInsertionOnly(emptyList(), cursorPosition = 10))
     }
 
     @Test

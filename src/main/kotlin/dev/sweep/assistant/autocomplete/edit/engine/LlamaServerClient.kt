@@ -11,8 +11,8 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * HTTP client for llama-server's OpenAI-compatible /v1/completions endpoint.
@@ -30,7 +30,13 @@ class LlamaServerClient(
         .build()
     private val gson = Gson()
     private val requestCounter = AtomicLong(0)
-    private val currentRequestThread = AtomicReference<Thread?>(null)
+
+    /**
+     * Every in-flight generation keyed by its request id. A new request
+     * interrupts ALL older ones — a single-slot reference used to leave older
+     * requests streaming for seconds on the shared GPU slots.
+     */
+    private val inFlightThreads = ConcurrentHashMap<Long, Thread>()
 
     data class CompletionResult(
         val text: String,
@@ -59,108 +65,124 @@ class LlamaServerClient(
         maxOutputChars: Int = 0,
     ): CompletionResult {
         val myId = requestCounter.incrementAndGet()
-
-        // Cancel any in-flight request by interrupting its thread
-        currentRequestThread.getAndSet(Thread.currentThread())?.interrupt()
-
-        if (myId != requestCounter.get()) {
-            throw RequestCancelledException()
-        }
-
-        val requestBody = mapOf(
-            "prompt" to prompt,
-            "stop" to stop,
-            "max_tokens" to maxTokens,
-            "temperature" to temperature,
-            "n_predict" to maxTokens,
-            "stream" to true,
-        )
-
-        val json = gson.toJson(requestBody)
-        val url = "$baseUrl/v1/completions"
-
-        val request = HttpRequest.newBuilder()
-            .uri(URI.create(url))
-            .timeout(Duration.ofMillis(timeoutMs))
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(json))
-            .build()
-
-        val start = System.currentTimeMillis()
-
-        val response = try {
-            httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream())
-        } catch (e: java.io.IOException) {
-            if (Thread.interrupted() || myId != requestCounter.get()) {
-                throw RequestCancelledException()
-            }
-            throw e
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw RequestCancelledException()
-        } finally {
-            currentRequestThread.compareAndSet(Thread.currentThread(), null)
-        }
-
-        Thread.interrupted() // clear interrupt flag
-
-        if (response.statusCode() != 200) {
-            val body = response.body().bufferedReader().readText()
-            logger.warn("llama-server returned ${response.statusCode()}: $body")
-            return CompletionResult("", System.currentTimeMillis() - start, "error")
-        }
-
-        // Stream SSE events, accumulate text, abort early if needed
-        val accumulated = StringBuilder()
-        var finishReason: String? = null
-        var abortedEarly = false
-
+        val currentThread = Thread.currentThread()
+        inFlightThreads[myId] = currentThread
         try {
-            BufferedReader(InputStreamReader(response.body())).use { reader ->
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    val l = line ?: continue
-                    if (!l.startsWith("data: ")) continue
-                    val data = l.removePrefix("data: ").trim()
-                    if (data == "[DONE]") break
-
-                    try {
-                        val event = JsonParser.parseString(data).asJsonObject
-                        val choices = event.getAsJsonArray("choices")
-                        if (choices != null && choices.size() > 0) {
-                            val choice = choices[0].asJsonObject
-                            val text = choice.get("text")?.asString ?: ""
-                            accumulated.append(text)
-                            finishReason = choice.get("finish_reason")?.let {
-                                if (it.isJsonNull) null else it.asString
-                            }
-                        }
-                    } catch (_: Exception) {
-                        // Skip malformed SSE events
-                    }
-
-                    // Early abort: output exceeds expected code block size
-                    if (maxOutputChars > 0 && accumulated.length > maxOutputChars) {
-                        logger.info("Early abort: output ${accumulated.length} chars > limit $maxOutputChars")
-                        abortedEarly = true
-                        finishReason = "length"
-                        break
-                    }
+            // Cancel every older in-flight request by interrupting its thread
+            val olderThreads = mutableListOf<Thread>()
+            val iterator = inFlightThreads.entries.iterator()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (entry.key < myId) {
+                    iterator.remove()
+                    olderThreads.add(entry.value)
                 }
             }
-        } catch (e: java.io.IOException) {
-            if (Thread.interrupted() || myId != requestCounter.get()) {
+            olderThreads.forEach { it.interrupt() }
+
+            if (myId != requestCounter.get()) {
                 throw RequestCancelledException()
             }
-            // Stream closed — use whatever we accumulated
+
+            val requestBody = mapOf(
+                "prompt" to prompt,
+                "stop" to stop,
+                "max_tokens" to maxTokens,
+                "temperature" to temperature,
+                "n_predict" to maxTokens,
+                "stream" to true,
+            )
+
+            val json = gson.toJson(requestBody)
+            val url = "$baseUrl/v1/completions"
+
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofMillis(timeoutMs))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(json))
+                .build()
+
+            val start = System.currentTimeMillis()
+
+            val response = try {
+                httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream())
+            } catch (e: java.io.IOException) {
+                if (Thread.interrupted() || myId != requestCounter.get()) {
+                    throw RequestCancelledException()
+                }
+                throw e
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw RequestCancelledException()
+            }
+
+            Thread.interrupted() // clear interrupt flag
+
+            if (response.statusCode() != 200) {
+                val body = response.body().bufferedReader().readText()
+                logger.warn("llama-server returned ${response.statusCode()}: $body")
+                return CompletionResult("", System.currentTimeMillis() - start, "error")
+            }
+
+            // Stream SSE events, accumulate text, abort early if needed
+            val accumulated = StringBuilder()
+            var finishReason: String? = null
+            var abortedEarly = false
+
+            try {
+                BufferedReader(InputStreamReader(response.body())).use { reader ->
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) {
+                        // A newer request superseded this one — stop streaming now
+                        if (myId != requestCounter.get()) {
+                            throw RequestCancelledException()
+                        }
+                        val l = line ?: continue
+                        if (!l.startsWith("data: ")) continue
+                        val data = l.removePrefix("data: ").trim()
+                        if (data == "[DONE]") break
+
+                        try {
+                            val event = JsonParser.parseString(data).asJsonObject
+                            val choices = event.getAsJsonArray("choices")
+                            if (choices != null && choices.size() > 0) {
+                                val choice = choices[0].asJsonObject
+                                val text = choice.get("text")?.asString ?: ""
+                                accumulated.append(text)
+                                finishReason = choice.get("finish_reason")?.let {
+                                    if (it.isJsonNull) null else it.asString
+                                }
+                            }
+                        } catch (_: Exception) {
+                            // Skip malformed SSE events
+                        }
+
+                        // Early abort: output exceeds expected code block size
+                        if (maxOutputChars > 0 && accumulated.length > maxOutputChars) {
+                            logger.info("Early abort: output ${accumulated.length} chars > limit $maxOutputChars")
+                            abortedEarly = true
+                            finishReason = "length"
+                            break
+                        }
+                    }
+                }
+            } catch (e: java.io.IOException) {
+                if (Thread.interrupted() || myId != requestCounter.get()) {
+                    throw RequestCancelledException()
+                }
+                // Stream closed — use whatever we accumulated
+            }
+
+            val elapsedMs = System.currentTimeMillis() - start
+            val text = accumulated.toString()
+
+            logger.info("llama-server completion: ${text.length} chars, ${elapsedMs}ms, finish=$finishReason${if (abortedEarly) " (early abort)" else ""}")
+
+            return CompletionResult(text, elapsedMs, finishReason)
+        } finally {
+            inFlightThreads.remove(myId, currentThread)
         }
-
-        val elapsedMs = System.currentTimeMillis() - start
-        val text = accumulated.toString()
-
-        logger.info("llama-server completion: ${text.length} chars, ${elapsedMs}ms, finish=$finishReason${if (abortedEarly) " (early abort)" else ""}")
-
-        return CompletionResult(text, elapsedMs, finishReason)
     }
 
     /** Health check — returns true if llama-server is reachable. */

@@ -350,8 +350,28 @@ class RecentEditsTracker(
     @Volatile
     private var latestRequestTime = 0L
     private var consumerJob: Job? = null
-    private val fetchJobs =
-        ConcurrentHashMap<Long, CompletableDeferred<Pair<AutocompleteRequestEntry, NextEditAutocompleteResponse?>>>()
+
+    /**
+     * In-flight fetches keyed by request time. Holds BOTH the deferred (what
+     * the consumer awaits) and the coroutine Job — cancelling the Job is what
+     * actually stops a superseded fetch (deferred.cancel() alone left zombies
+     * burning GPU slots for seconds).
+     */
+    private data class FetchJob(
+        val deferred: CompletableDeferred<Pair<AutocompleteRequestEntry, NextEditAutocompleteResponse?>>,
+        val job: Job,
+    )
+
+    private val fetchJobs = ConcurrentHashMap<Long, FetchJob>()
+
+    /** Cancels every in-flight fetch. Caller must hold [mutex]. */
+    private fun cancelFetchJobsLocked() {
+        fetchJobs.values.forEach { fetchJob ->
+            fetchJob.job.cancel()
+            fetchJob.deferred.cancel()
+        }
+        fetchJobs.clear()
+    }
     private val mutex = Mutex()
     private val completionChannel =
         Channel<Pair<AutocompleteRequestEntry, NextEditAutocompleteResponse?>>(Channel.BUFFERED)
@@ -1994,14 +2014,16 @@ class RecentEditsTracker(
         deferred: CompletableDeferred<Pair<AutocompleteRequestEntry, NextEditAutocompleteResponse?>>,
     ) = ioScope.launch {
         AutocompleteLoadingNotifier.begin()
+        val job = currentCoroutineContext().job
         try {
             mutex.withLock {
-                // Cancel all previous requests
-                fetchJobs.values.forEach { it.cancel() }
-                fetchJobs.clear()
+                // Cancel all previous requests — the Job stops the fetch
+                // coroutine (engine's shouldAbort fires at the next attempt),
+                // the deferred unblocks anyone awaiting the old result.
+                cancelFetchJobsLocked()
 
                 // Add the new request
-                fetchJobs[requestEntry.requestTime] = deferred
+                fetchJobs[requestEntry.requestTime] = FetchJob(deferred, job)
             }
 //            println("Sending request: ${requestEntry.id} at time ${requestEntry.requestTime}")
             val requestContext = currentCoroutineContext()
@@ -2025,6 +2047,11 @@ class RecentEditsTracker(
             // println("Received response: ${response?.autocomplete_id} in ${System.currentTimeMillis() - requestEntry.requestTime}")
             deferred.complete(requestEntry to response)
             completionChannel.send(requestEntry to response)
+        } catch (e: CancellationException) {
+            // A newer request superseded this fetch — drop it without feeding
+            // the consumer stale results.
+            deferred.cancel(e)
+            throw e
         } catch (e: Exception) {
             // println("Error fetching autocomplete: ${e.message}")
             deferred.complete(requestEntry to null)
@@ -2092,8 +2119,8 @@ class RecentEditsTracker(
                             mutex.withLock {
                                 val maxTime = (
                                     fetchJobs.values.maxOfOrNull {
-                                        if (it.isCompleted) {
-                                            it.getCompleted().first.requestTime
+                                        if (it.deferred.isCompleted) {
+                                            runCatching { it.deferred.getCompleted().first.requestTime }.getOrDefault(0L)
                                         } else {
                                             0L
                                         }
@@ -2112,8 +2139,7 @@ class RecentEditsTracker(
 
                         // If so, cancel all fetch requests
                         mutex.withLock {
-                            fetchJobs.values.forEach { it.cancel() }
-                            fetchJobs.clear()
+                            cancelFetchJobsLocked()
                         }
                         ApplicationManager.getApplication().invokeLater {
                             if (request.requestTime != latestRequestTime &&
@@ -2805,10 +2831,9 @@ class RecentEditsTracker(
         consumerJob = null
 
         // Clear fetch jobs synchronously
-        fetchJobs.forEach { (_, deferred) ->
-            if (!deferred.isCompleted) {
-                deferred.cancel()
-            }
+        fetchJobs.forEach { (_, fetchJob) ->
+            fetchJob.job.cancel()
+            fetchJob.deferred.cancel()
         }
         fetchJobs.clear()
 

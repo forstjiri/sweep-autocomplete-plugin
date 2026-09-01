@@ -35,6 +35,8 @@ class NextEditAutocompleteEngine(
         val recentChangesHighRes: String = "",
         val changesAboveCursor: Boolean = false,
         val editorDiagnostics: List<NesRetrieval.EditorDiagnosticData>? = null,
+        val steering: String? = null,
+        val avoidCompletions: List<String> = emptyList(),
     )
 
     data class UserAction(
@@ -107,6 +109,8 @@ class NextEditAutocompleteEngine(
             retrievalChunks = limitedRetrievalChunks,
             recentChangesHighRes = request.recentChangesHighRes,
             changesAboveCursor = request.changesAboveCursor,
+            steering = request.steering,
+            avoidCompletions = request.avoidCompletions,
             forceGhostText = forceGhostText,
         )
 
@@ -173,6 +177,8 @@ class NextEditAutocompleteEngine(
                         retrievalChunks = extraChunks,
                         recentChangesHighRes = request.recentChangesHighRes,
                         changesAboveCursor = request.changesAboveCursor,
+                        steering = request.steering,
+                        avoidCompletions = request.avoidCompletions,
                         forceGhostText = forceGhostText,
                     )
 
@@ -206,6 +212,8 @@ class NextEditAutocompleteEngine(
         retrievalChunks: List<NesPromptBuilder.FileChunkData>,
         recentChangesHighRes: String,
         changesAboveCursor: Boolean,
+        steering: String?,
+        avoidCompletions: List<String>,
         forceGhostText: Boolean,
     ): List<AutocompleteResult>? {
         if (codeBlock.isEmpty()) return null
@@ -224,6 +232,7 @@ class NextEditAutocompleteEngine(
             retrievalChunks = retrievalChunks,
             recentChangesHighRes = recentChangesHighRes,
             changesAboveCursor = changesAboveCursor,
+            steering = steering,
             forceGhostText = forceGhostText,
             useRemoteEndpoint = false,  // local llama-server
         )
@@ -240,25 +249,107 @@ class NextEditAutocompleteEngine(
         val promptTail = promptResult.formattedPrompt.takeLast(300)
         logger.info("NES: prompt tail: ...${promptTail.replace("\n", "\\n")}")
 
-        // Call llama-server
+        // Temperature ladder: steered requests ("next suggestion") retry with
+        // progressively hotter sampling so they can escape the deterministic
+        // continuation they were asked not to repeat (parity with the Python
+        // library). Plain typing stays a single greedy pass for latency.
+        val temperatures = NesUtils.steeringTemperatures(
+            steered = steering != null || avoidCompletions.isNotEmpty(),
+        )
         // Allow output up to 2x the code block size (room for insertions) + 20 lines buffer
         val maxOutputChars = (promptResult.cleanedCodeBlock.length * 2) + (20 * 80)
-        val completionResult = try {
-            llamaClient.generateCompletion(
-                prompt = promptResult.formattedPrompt,
-                maxOutputChars = maxOutputChars,
-            )
-        } catch (e: LlamaServerClient.RequestCancelledException) {
-            logger.info("NES request cancelled")
-            return null
-        } catch (e: Exception) {
-            logger.warn("NES inference error: ${e.message}")
-            return null
+
+        for ((index, temperature) in temperatures.withIndex()) {
+            val isLastAttempt = index == temperatures.lastIndex
+            when (
+                val outcome =
+                    generateAndProcessAttempt(
+                        promptResult = promptResult,
+                        fileContents = fileContents,
+                        cursorPosition = cursorPosition,
+                        autocompleteId = autocompleteId,
+                        maxOutputChars = maxOutputChars,
+                        temperature = temperature,
+                        avoidCompletions = avoidCompletions,
+                    )
+            ) {
+                is AttemptOutcome.Aborted -> return null
+                is AttemptOutcome.EmptyText ->
+                    if (isLastAttempt) return null else logSteeringRetry(index, temperatures.size, temperature, outcome.reason)
+                is AttemptOutcome.Filtered ->
+                    if (isLastAttempt) return null else logSteeringRetry(index, temperatures.size, temperature, outcome.reason)
+                is AttemptOutcome.Avoided -> {
+                    // Valid hunks, but the generation repeats an avoided suggestion.
+                    // The last ladder attempt is still returned — the client-side
+                    // dedup + cached-completion cycling takes over from there.
+                    if (isLastAttempt) {
+                        logger.info("NES: returning ${outcome.completions.size} completions (avoided match, ladder exhausted)")
+                        return outcome.completions
+                    }
+                    logSteeringRetry(index, temperatures.size, temperature, "matches_avoided")
+                }
+                is AttemptOutcome.Success -> return outcome.completions
+            }
         }
+        return null
+    }
+
+    private fun logSteeringRetry(
+        attemptIndex: Int,
+        totalAttempts: Int,
+        temperature: Float,
+        reason: String,
+    ) {
+        logger.info(
+            "NES: steering retry attempt ${attemptIndex + 1}/$totalAttempts temperature=$temperature reason=$reason",
+        )
+    }
+
+    /** Result of a single generation + post-processing attempt. */
+    private sealed class AttemptOutcome {
+        /** Newer request superseded this one or inference failed — abort the pass. */
+        object Aborted : AttemptOutcome()
+
+        /** Model produced no text — retryable. */
+        data class EmptyText(val reason: String) : AttemptOutcome()
+
+        /** Post-processing filters dropped the completion — retryable. */
+        data class Filtered(val reason: String) : AttemptOutcome()
+
+        /** Valid hunks, but the completion repeats an avoided suggestion. */
+        data class Avoided(val completions: List<AutocompleteResult>) : AttemptOutcome()
+
+        /** Valid, fresh hunks. */
+        data class Success(val completions: List<AutocompleteResult>) : AttemptOutcome()
+    }
+
+    private fun generateAndProcessAttempt(
+        promptResult: NesPromptBuilder.PromptBuildResult,
+        fileContents: String,
+        cursorPosition: Int,
+        autocompleteId: String,
+        maxOutputChars: Int,
+        temperature: Float,
+        avoidCompletions: List<String>,
+    ): AttemptOutcome {
+        val completionResult =
+            try {
+                llamaClient.generateCompletion(
+                    prompt = promptResult.formattedPrompt,
+                    maxOutputChars = maxOutputChars,
+                    temperature = temperature,
+                )
+            } catch (e: LlamaServerClient.RequestCancelledException) {
+                logger.info("NES request cancelled")
+                return AttemptOutcome.Aborted
+            } catch (e: Exception) {
+                logger.warn("NES inference error: ${e.message}")
+                return AttemptOutcome.Aborted
+            }
 
         if (completionResult.text.isEmpty()) {
             logger.warn("NES: empty completion text")
-            return null
+            return AttemptOutcome.EmptyText("no_completion")
         }
 
         // Post-process completion
@@ -268,11 +359,11 @@ class NextEditAutocompleteEngine(
 
         if (completion.startsWith("<|") || completion.removePrefix(promptResult.forcedPrefix).startsWith("<|")) {
             logger.warn("NES: filtered — completion starts with special token")
-            return null
+            return AttemptOutcome.Filtered("special_token")
         }
         if (promptResult.forcedPrefix.isNotEmpty() && !completionResult.text.startsWith(promptResult.forcedPrefix)) {
             logger.warn("NES: filtered — forced prefix '${promptResult.forcedPrefix.take(30)}' not respected")
-            return null
+            return AttemptOutcome.Filtered("forced_prefix")
         }
 
         // Clean up completion
@@ -288,7 +379,7 @@ class NextEditAutocompleteEngine(
         // Check max tokens
         if (completionResult.finishReason == "length") {
             logger.warn("NES: filtered — hit max tokens")
-            return null
+            return AttemptOutcome.Filtered("max_tokens")
         }
 
         // Check for pure insertion above cursor
@@ -297,7 +388,7 @@ class NextEditAutocompleteEngine(
             )
         ) {
             logger.warn("NES: filtered — pure insertion above cursor")
-            return null
+            return AttemptOutcome.Filtered("pure_insertion_above_cursor")
         }
 
         // Check for large diff above cursor
@@ -306,7 +397,7 @@ class NextEditAutocompleteEngine(
             )
         ) {
             logger.warn("NES: filtered — large diff above cursor")
-            return null
+            return AttemptOutcome.Filtered("large_diff")
         }
 
         // Select best hunks
@@ -324,7 +415,7 @@ class NextEditAutocompleteEngine(
             logger.warn("NES: cleanedCodeBlock (${promptResult.cleanedCodeBlock.length} chars): '${promptResult.cleanedCodeBlock.take(150).replace("\n", "\\n")}'")
             logger.warn("NES: completion after cleanup (${completion.length} chars): '${completion.take(150).replace("\n", "\\n")}'")
             logger.warn("NES: completion == cleanedCodeBlock? ${completion == promptResult.cleanedCodeBlock}")
-            return null
+            return AttemptOutcome.Filtered("no_hunks")
         }
 
         // Check for reverts
@@ -334,12 +425,25 @@ class NextEditAutocompleteEngine(
         for (section in promptResult.prevSections) {
             if (NesUtils.isEqualIgnoringNewlines(codeBlockWithCompletions, section)) {
                 logger.warn("NES: filtered — revert detected")
-                return null
+                return AttemptOutcome.Filtered("revert")
             }
         }
 
+        // Duplicate-avoidance at the sampling level (Python parity): a steered
+        // generation that repeats an avoided suggestion is retried on a hotter
+        // temperature instead of being shown.
+        if (NesUtils.matchesAvoidedCompletion(
+                continuation = completionResult.text,
+                prefix = promptResult.prefill,
+                avoidedCompletions = avoidCompletions,
+            )
+        ) {
+            logger.info("NES: completion matches an avoided suggestion")
+            return AttemptOutcome.Avoided(completions)
+        }
+
         logger.info("NES: returning ${completions.size} completions successfully")
-        return completions
+        return AttemptOutcome.Success(completions)
     }
 
     private fun shouldDisableAutocomplete(fileContents: String): Boolean {

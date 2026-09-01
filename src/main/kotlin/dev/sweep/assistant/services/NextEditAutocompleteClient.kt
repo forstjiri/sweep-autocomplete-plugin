@@ -80,6 +80,8 @@ class NextEditAutocompleteClient(
                     message = it.message,
                 )
             },
+            steering = request.steering,
+            avoidCompletions = request.avoid_completions,
         )
 
         val result = engine.fetchNextEdits(nesRequest)

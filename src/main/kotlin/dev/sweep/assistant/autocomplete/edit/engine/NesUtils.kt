@@ -385,6 +385,39 @@ object NesUtils {
         }
         return tokens
     }
+
+    /**
+     * Sampling temperatures for one NES request. Plain typing is a single
+     * greedy pass; steered requests ("next suggestion") climb a temperature
+     * ladder so sampling can escape the deterministic continuation of the
+     * edit they were asked not to repeat (parity with the Python library).
+     */
+    fun steeringTemperatures(steered: Boolean): List<Float> =
+        if (steered) listOf(0.35f, 0.8f, 1.05f) else listOf(0.0f)
+
+    /**
+     * Port of the Python library's _matches_avoided(): a generated completion
+     * duplicates an avoided suggestion when its stripped form equals or starts
+     * with any stripped avoided completion.
+     */
+    fun matchesAvoidedCompletion(
+        continuation: String,
+        prefix: String = "",
+        avoidedCompletions: List<String>,
+    ): Boolean {
+        if (avoidedCompletions.isEmpty()) return false
+        val candidates = buildList {
+            add(continuation)
+            if (prefix.isNotEmpty()) add(prefix + continuation)
+        }
+        return candidates.any { candidate ->
+            val normalized = candidate.trim()
+            avoidedCompletions.any { avoided ->
+                val target = avoided.trim()
+                target.isNotEmpty() && (normalized == target || normalized.startsWith(target))
+            }
+        }
+    }
 }
 
 /**

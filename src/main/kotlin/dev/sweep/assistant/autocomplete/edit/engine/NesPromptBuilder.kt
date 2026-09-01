@@ -212,6 +212,7 @@ object NesPromptBuilder {
         retrievalChunks: List<FileChunkData> = emptyList(),
         recentChangesHighRes: String = "",
         changesAboveCursor: Boolean = false,
+        steering: String? = null,
         forceGhostText: Boolean = false,
         useRemoteEndpoint: Boolean = false,
     ): PromptBuildResult {
@@ -308,6 +309,14 @@ object NesPromptBuilder {
 
         // Truncate long lines
         formattedPrompt = NesUtils.truncateLongLines(formattedPrompt)
+
+        // Steering is appended after truncation so the tag can never be lost
+        // to the size-based rebuild above (the Python library dropped it there).
+        // Avoided completions stay out of the prompt entirely — the engine
+        // escapes duplicates via the sampling temperature ladder instead.
+        if (steering != null) {
+            formattedPrompt += "\n<steering>\n$steering\n</steering>"
+        }
 
         return PromptBuildResult(
             formattedPrompt, cleanedCodeBlock, prefill, forcedPrefix, prevSections,

@@ -273,4 +273,35 @@ class NesUtilsTest {
         assertEquals(listOf("single"), "single".linesSplitKeepEnds())
         assertEquals(listOf(""), "".linesSplitKeepEnds())
     }
+
+    // --- steering helpers ---
+
+    @Test
+    fun `steeringTemperatures steered climbs the ladder`() {
+        assertEquals(listOf(0.35f, 0.8f, 1.05f), NesUtils.steeringTemperatures(steered = true))
+    }
+
+    @Test
+    fun `steeringTemperatures plain typing is greedy single shot`() {
+        assertEquals(listOf(0.0f), NesUtils.steeringTemperatures(steered = false))
+    }
+
+    @Test
+    fun `matchesAvoidedCompletion detects equality and prefixes`() {
+        val avoided = listOf("\t\treturn false;\n")
+        assertTrue(NesUtils.matchesAvoidedCompletion("\t\treturn false;\n", avoidedCompletions = avoided))
+        assertTrue(NesUtils.matchesAvoidedCompletion("\t\treturn false;\n\t}\n", avoidedCompletions = avoided))
+        // stripped comparison
+        assertTrue(NesUtils.matchesAvoidedCompletion("\t\treturn false;", avoidedCompletions = avoided))
+        assertFalse(NesUtils.matchesAvoidedCompletion("\t\treturn true;\n", avoidedCompletions = avoided))
+    }
+
+    @Test
+    fun `matchesAvoidedCompletion checks prefix candidate and ignores empty`() {
+        val avoided = listOf("const x = 1;")
+        // continuation alone does not match, but prefix + continuation does
+        assertTrue(NesUtils.matchesAvoidedCompletion(" = 1;", prefix = "const x", avoidedCompletions = avoided))
+        assertFalse(NesUtils.matchesAvoidedCompletion("anything", avoidedCompletions = emptyList()))
+        assertFalse(NesUtils.matchesAvoidedCompletion("anything", avoidedCompletions = listOf("  ")))
+    }
 }

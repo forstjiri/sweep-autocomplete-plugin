@@ -1561,14 +1561,14 @@ class RecentEditsTracker(
      * completions that were already displayed for the current document state so the
      * keypress never leaves the editor without a suggestion.
      */
-    private fun showNextCachedCompletion() {
-        val currentState = getCurrentEditorState() ?: return
+    private fun showNextCachedCompletion(): Boolean {
+        val currentState = getCurrentEditorState() ?: return false
         val validEntries = shownCompletionCache.filter {
             it.editorState.documentText == currentState.documentText
         }
         if (validEntries.isEmpty()) {
             logger.info("No cached completion available for cycling")
-            return
+            return false
         }
         val entry = validEntries[completionCacheCycleIndex % validEntries.size]
         completionCacheCycleIndex = (completionCacheCycleIndex + 1) % validEntries.size
@@ -1582,6 +1582,7 @@ class RecentEditsTracker(
             currentState,
             forceShow = true,
         )
+        return true
     }
 
     private fun getCurrentEditorState(): EditorState? {
@@ -2143,13 +2144,16 @@ class RecentEditsTracker(
                                         "Skipping duplicate steered autocomplete response: " +
                                             "request=${request.requestTime}, completion=${firstResponse.completion.replace("\n", "\\n").take(300)}",
                                     )
-                                    // The server already retries steered duplicates with a
-                                    // temperature ladder against avoided completions; plugin-side
-                                    // re-prompting returned the same completion every time in
-                                    // practice, so cycle the cached suggestions instead of
-                                    // spending seconds of GPU time on more retries.
-                                    logger.info("Stopping duplicate steering retries (server temperature ladder exhausted)")
-                                    showNextCachedCompletion()
+                                    // The engine already retried this steered request on its sampling
+                                    // temperature ladder (0.35 → 0.8 → 1.05) and still produced a
+                                    // repeat, so cycle the previously shown suggestions for this
+                                    // document state instead of spending more GPU time on retries.
+                                    if (!showNextCachedCompletion()) {
+                                        // Nothing cached for this state — show the repeated
+                                        // response anyway so the keypress never ends empty.
+                                        logger.info("No cached completion to cycle — re-showing repeated steered response")
+                                        showAutocomplete(firstResponse, request.editorState, forceShow = true)
+                                    }
                                     return@invokeLater
                                 }
                                 if (responseToShow != null) {

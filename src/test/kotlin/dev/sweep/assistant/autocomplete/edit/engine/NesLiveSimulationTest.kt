@@ -26,9 +26,11 @@ class NesLiveSimulationTest {
 
     private fun buildFile(withTypedLine: Boolean): String {
         val typedLine = tab(3) + typedLinePrefix + "$expression;\n"
-        val filler1 = tab(3) + "const currentAmount = amount;\n"
-        val filler2 = tab(3) + "const hasLimitation = limitation != null;\n"
-        val duplicateLine = tab(3) + "const maximumAmountInCart = $expression;\n"
+        val filler1 = tab(3) + "const hasLimitation = limitation != null;\n"
+        val filler2 = tab(3) + "const currentAmount = amount;\n"
+        // Real shape from idea.log: the expression appears as the second
+        // argument of Math.min inside a ternary below the typed line.
+        val minLine = tab(4) + ": Math.min(globalMaximumAmountInCart, $expression);\n"
         return buildString {
             append("export default class CartProductLimitationFacade {\n")
             append(tab(1) + "async getEffectiveMaximumAmounts(products: CartProduct[]): Promise<Map<string, number>> {\n")
@@ -41,9 +43,9 @@ class NesLiveSimulationTest {
             if (withTypedLine) append(typedLine)
             append(filler1)
             append(filler2)
-            append(duplicateLine)
-            append(tab(3) + "result.effectiveMaximumAmountInCartByProductId.set(productId, maximumAmountInCart);\n")
-            append(tab(3) + "return result;\n")
+            append(tab(3) + "return amount > 0\n")
+            append(tab(4) + "? amount\n")
+            append(minLine)
             append(tab(2) + "}, new Map());\n")
             append(tab(1) + "}\n")
             append("}\n")
@@ -109,10 +111,16 @@ class NesLiveSimulationTest {
         val winner = hunks.firstOrNull {
             it.completion.contains("productMax") &&
                 it.startIndex <= secondOccurrence + expression.length &&
-                it.endIndex >= secondOccurrence
+                it.endIndex >= secondOccurrence &&
+                // The canonical form replaces the expression itself — if the raw
+                // expression is still in the completion, the model picked (or
+                // kept) the wrong slot, e.g. Math.min(productMax, <expr>).
+                !it.completion.contains(expression)
         }
         val primary = hunks.firstOrNull()
-        println("SIM [$label] primarySpansSecond=${primary != null && primary.completion.contains("productMax") && primary.startIndex <= secondOccurrence + expression.length && primary.endIndex >= secondOccurrence}")
+        println(
+            "SIM [$label] primarySpansSecond=${primary != null && primary.completion.contains("productMax") && primary.startIndex <= secondOccurrence + expression.length && primary.endIndex >= secondOccurrence && !primary.completion.contains(expression)}",
+        )
         assertTrue(
             winner != null,
             "[$label] expected a hunk replacing the second occurrence of the expression with productMax",
@@ -157,12 +165,11 @@ class NesLiveSimulationTest {
     @Test
     fun `steered retry away from previous suggestion`() {
         assumeTrue(healthCheck(), "llama-server not running on :18081")
-        val noise = tab(3) + "const acceptedProductLimitation = limitation?.acceptedProductLimitation;\n"
-        val setFix = tab(3) + "result.effectiveMaximumAmountInCartByProductId.set(productId, productMax);\n"
+        val noise = tab(4) + ": Math.min(productMax, $expression);\n"
         run(
             "steered-retry",
             steering = "Suggest a different useful next edit at the current cursor. Use a different implementation and do not repeat the previous suggestion.",
-            avoid = listOf(noise, setFix),
+            avoid = listOf(noise),
         )
     }
 }

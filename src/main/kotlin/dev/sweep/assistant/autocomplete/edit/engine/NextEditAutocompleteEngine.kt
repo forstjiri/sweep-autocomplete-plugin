@@ -353,6 +353,7 @@ class NextEditAutocompleteEngine(
         return generateAndProcessAttempt(
             promptResult = promptResult,
             fileContents = fileContents,
+            recentChanges = recentChanges,
             cursorPosition = cursorPosition,
             autocompleteId = autocompleteId,
             maxOutputChars = maxOutputChars,
@@ -390,6 +391,7 @@ class NextEditAutocompleteEngine(
     private fun generateAndProcessAttempt(
         promptResult: NesPromptBuilder.PromptBuildResult,
         fileContents: String,
+        recentChanges: String,
         cursorPosition: Int,
         autocompleteId: String,
         maxOutputChars: Int,
@@ -468,22 +470,29 @@ class NextEditAutocompleteEngine(
         }
 
         // Select best hunks
-        val completions = NesCompletionParser.selectBestHunkFromCompletion(
+        val selectedCompletions = NesCompletionParser.selectBestHunkFromCompletion(
             completion, promptResult.cleanedCodeBlock, fileContents, cursorPosition, autocompleteId,
         )
 
-        logger.info("NES: selectBestHunk returned ${completions.size} completions")
-        completions.forEachIndexed { i, c ->
-            logger.info("NES:   [$i] start=${c.startIndex} end=${c.endIndex} text='${c.completion.take(60)}'")
-        }
+        logger.info("NES: selectBestHunk returned ${selectedCompletions.size} completions")
 
-        if (completions.isEmpty()) {
+        if (selectedCompletions.isEmpty()) {
             logger.warn("NES: filtered — no hunks selected from completion")
             logger.info(
                 "NES: no-hunks id=$autocompleteId output=${completion.length} " +
                     "block=${promptResult.cleanedCodeBlock.length} exactBlock=${completion == promptResult.cleanedCodeBlock}",
             )
             return AttemptOutcome.Filtered("no_hunks")
+        }
+
+        // Canonicalize variable-introduction follow-ups: when a recent change
+        // defines `name = expression`, a hunk that references `name` at a site
+        // containing that expression should replace the expression itself —
+        // the small model sometimes swaps the wrong slot instead.
+        val completions =
+            NesUtils.canonicalizeVariableIntroduction(selectedCompletions, fileContents, recentChanges)
+        completions.forEachIndexed { i, c ->
+            logger.info("NES:   [$i] start=${c.startIndex} end=${c.endIndex} text='${c.completion.take(60)}'")
         }
 
         // Check for reverts — but pure insertions at the cursor are ghost

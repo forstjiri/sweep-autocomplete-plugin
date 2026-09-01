@@ -406,6 +406,81 @@ object NesUtils {
         completions.isNotEmpty() &&
             completions.all { it.startIndex == it.endIndex && it.startIndex == cursorPosition }
 
+    private val variableDefinitionRegex =
+        Regex("""^\s*(?:const|let|var|val)\s+([A-Za-z_]\w*)\s*=\s*(.+?)\s*;?\s*$""")
+
+    /** Bare identifier / property chain — too trivial to canonically replace. */
+    private val trivialExpressionRegex = Regex("""^[A-Za-z_][\w.]*$""")
+
+    /**
+     * Variables defined on the added side of the recent changes, oldest first.
+     * The synthesized cursor-line anchor flows through here too, so a shortcut
+     * press with no tracked edits benefits equally.
+     */
+    fun recentVariableDefinitions(recentChanges: String): List<Pair<String, String>> {
+        val definitions = mutableListOf<Pair<String, String>>()
+        for (hunk in splitIntoHunks(recentChanges)) {
+            if (hunk.trim().lines().size <= 1) continue
+            val addedLines = hunk
+                .linesSplitKeepEnds()
+                .drop(1)
+                .filter { it.startsWith("+") && !it.startsWith("+++") }
+            for (line in addedLines) {
+                val match = variableDefinitionRegex.matchEntire(line.substring(1).trimEnd()) ?: continue
+                val name = match.groupValues[1]
+                val expression = match.groupValues[2].trim()
+                if (expression.length < 12 || trivialExpressionRegex.matches(expression)) continue
+                definitions.add(name to expression)
+            }
+        }
+        return definitions
+    }
+
+    /**
+     * Canonicalizes "variable introduction" follow-up edits. When the recent
+     * changes define `name = expression` and a hunk already references `name`
+     * at a site whose original text contains `expression` verbatim, rewrite
+     * the hunk to the canonical form: replace the expression with the name.
+     *
+     * The 1.5B model frequently picks the wrong slot (e.g. replaces the first
+     * argument of Math.min instead of the argument that equals the variable's
+     * initializer — a semantic change). The canonical replacement is always
+     * semantics-preserving and matches what the user means by "use the new
+     * variable here".
+     */
+    fun canonicalizeVariableIntroduction(
+        completions: List<NesCompletionParser.AutocompleteResult>,
+        fileContents: String,
+        recentChanges: String,
+    ): List<NesCompletionParser.AutocompleteResult> {
+        val definitions = recentVariableDefinitions(recentChanges)
+        if (definitions.isEmpty()) return completions
+
+        return completions.map { completion ->
+            val oldContent =
+                if (completion.startIndex in 0..completion.endIndex && completion.endIndex <= fileContents.length) {
+                    fileContents.substring(completion.startIndex, completion.endIndex)
+                } else {
+                    ""
+                }
+            if (oldContent.isEmpty()) return@map completion
+
+            for ((name, expression) in definitions.asReversed()) {
+                if (!oldContent.contains(expression)) continue
+                // A hunk spanning the definition itself must not be rewritten
+                // (`name = expression` would become `name = name`).
+                if (oldContent.contains("$name = $expression")) continue
+                if (!Regex("\\b$name\\b").containsMatchIn(completion.completion)) continue
+                val canonical = oldContent.replaceFirst(expression, name)
+                if (canonical != completion.completion) {
+                    return@map completion.copy(completion = canonical)
+                }
+                return@map completion
+            }
+            completion
+        }
+    }
+
     /**
      * Port of the Python library's _matches_avoided(): a generated completion
      * duplicates an avoided suggestion when its stripped form equals or starts

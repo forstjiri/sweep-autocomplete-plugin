@@ -277,6 +277,67 @@ class NesUtilsTest {
     // --- steering helpers ---
 
     @Test
+    fun `canonicalizeVariableIntroduction rewrites the wrong Math min slot`() {
+        // Live case: the model replaced the first Math.min argument instead of
+        // the one that equals the variable's initializer.
+        val expr = "limitation?.maximumAmountInCart ?? globalMaximumAmountInCart"
+        val fileLine = "\t\t\t\t: Math.min(globalMaximumAmountInCart, $expr);\n"
+        val file = "fun f() {\n\tconst productMax = $expr;\n\tconst filler = 1;\n$fileLine}\n"
+        val recentChanges =
+            "File: src/x.ts\n@@ -1,3 +1,4 @@\n \tconst filler = 0;\n+\tconst productMax = $expr;\n \tconst filler = 1;\n"
+        val wrongSlot = "\t\t\t\t: Math.min(productMax, $expr);\n"
+        val targetStart = file.indexOf(fileLine)
+
+        val result =
+            NesUtils.canonicalizeVariableIntroduction(
+                listOf(NesCompletionParser.AutocompleteResult(targetStart, targetStart + fileLine.length, wrongSlot, 1.0f, "id1")),
+                fileContents = file,
+                recentChanges = recentChanges,
+            )
+
+        assertEquals("\t\t\t\t: Math.min(globalMaximumAmountInCart, productMax);\n", result.first().completion)
+    }
+
+    @Test
+    fun `canonicalizeVariableIntroduction keeps hunks without the expression`() {
+        val expr = "limitation?.maximumAmountInCart ?? globalMaximumAmountInCart"
+        val file = "fun f() {\n\tconst productMax = $expr;\n\tset(productId, maximumAmountInCart);\n}\n"
+        val hunk = "\tset(productId, productMax);\n"
+
+        val result =
+            NesUtils.canonicalizeVariableIntroduction(
+                listOf(NesCompletionParser.AutocompleteResult(0, 0 + hunk.length, hunk, 1.0f, "id1")),
+                fileContents = file,
+                recentChanges = "File: src/x.ts\n@@ -1,2 +1,3 @@\n+\tconst productMax = $expr;\n",
+            )
+
+        assertEquals(hunk, result.first().completion)
+    }
+
+    @Test
+    fun `canonicalizeVariableIntroduction requires a real recent definition`() {
+        val expr = "limitation?.maximumAmountInCart ?? globalMaximumAmountInCart"
+        val file = "fun f() {\n\tconst maximumAmountInCart = $expr;\n}\n"
+        val hunk = "\tconst maximumAmountInCart = productMax;\n"
+        val completion = NesCompletionParser.AutocompleteResult(0, 0 + hunk.length, hunk, 1.0f, "id1")
+
+        // No recent changes at all — nothing to canonicalize from.
+        assertEquals(
+            hunk,
+            NesUtils.canonicalizeVariableIntroduction(listOf(completion), file, recentChanges = "").first().completion,
+        )
+        // Trivial initializer (bare identifier) is not a canonical target.
+        assertEquals(
+            hunk,
+            NesUtils.canonicalizeVariableIntroduction(
+                listOf(completion),
+                file,
+                "File: src/x.ts\n@@ -1,2 +1,3 @@\n+\tconst productMax = limitation;\n",
+            ).first().completion,
+        )
+    }
+
+    @Test
     fun `steeringMatrixTemperatures returns context rounds`() {
         assertEquals(listOf(0.35f, 0.8f), NesUtils.steeringMatrixTemperatures())
     }

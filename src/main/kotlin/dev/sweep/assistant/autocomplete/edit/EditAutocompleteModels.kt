@@ -25,9 +25,9 @@ data class EditRecord(
     val offset: Int,
     val timestamp: Long = System.currentTimeMillis(),
 ) {
-    val diff = calculateDiff(originalText, newText)
-    val formattedDiff = "File: $filePath\n$diff"
-    val diffHunks: Int = countDiffHunks(diff)
+    val diff by lazy { calculateDiff(originalText, newText) }
+    val formattedDiff by lazy { "File: $filePath\n$diff" }
+    val diffHunks by lazy { countDiffHunks(diff) }
 
     fun isTooLarge(): Boolean = diff.length > MAX_TOKEN_COUNT * AVG_TOKEN_LENGTH
 

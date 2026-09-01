@@ -56,6 +56,7 @@ import java.util.*
 import java.util.Queue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicLong
 import javax.swing.SwingUtilities
 import kotlin.math.abs
 
@@ -415,6 +416,7 @@ class RecentEditsTracker(
     private val debouncer =
         Debouncer({ SweepSettings.getInstance().getDebounceThresholdMs() }, scope, project) { processLatestEdit() }
     private var lastDocumentText: String? = null
+    private val editSequence = AtomicLong(0)
     @Volatile
     private var originalDocumentText: String = ""
 
@@ -902,10 +904,13 @@ class RecentEditsTracker(
                     trackUserAction(actionType, finalLine, finalOffset, relativePath)
                 }
 
+                val previousText = lastDocumentText ?: ""
+                val previousEdit = recentEdits.lastOrNull()
+                val sequence = editSequence.incrementAndGet()
                 listenerScope.launch {
                     val currentEdit =
                         EditRecord(
-                            originalText = lastDocumentText ?: "",
+                            originalText = previousText,
                             newText = newText,
                             filePath = relativePath,
                             offset = event.offset,
@@ -914,45 +919,35 @@ class RecentEditsTracker(
                     val (addedLines, deletedLines) = countAddedAndDeletedLines(diff)
 
                     if (addedLines > 3 || deletedLines > 3 || isFileTooLarge(newText, project)) {
-                        withContext(Dispatchers.EDT) { lastDocumentText = newText }
+                        withContext(Dispatchers.EDT) {
+                            if (editSequence.get() == sequence) lastDocumentText = newText
+                        }
                         return@launch
                     }
+                    if (currentEdit.isTooLarge() || currentEdit.isNoOpDiff()) return@launch
 
-                    ApplicationManager.getApplication().invokeLater {
-                        val editRecord =
+                    val shouldCombine = shouldCombineWithPreviousEdit(previousEdit, currentEdit)
+                    val combinedEdit =
+                        if (shouldCombine && previousEdit != null) {
                             EditRecord(
-                                originalText = lastDocumentText ?: "",
+                                originalText = previousEdit.originalText,
                                 newText = newText,
                                 filePath = relativePath,
                                 offset = event.offset,
-                            )
-                        if (editRecord.isTooLarge() || editRecord.isNoOpDiff()) return@invokeLater
-                        recentEditsHighRes.add(editRecord)
-                    }
+                            ).also { it.diff }
+                        } else {
+                            currentEdit
+                        }
+                    if (combinedEdit.isTooLarge() || combinedEdit.isNoOpDiff()) return@launch
 
                     ApplicationManager.getApplication().invokeLater {
-                        val previousEdit = recentEdits.lastOrNull()
-                        val shouldCombine = shouldCombineWithPreviousEdit(previousEdit, currentEdit)
-                        if (shouldCombine && previousEdit != null) {
-                            val combinedEdit =
-                                EditRecord(
-                                    originalText = previousEdit.originalText,
-                                    newText = newText,
-                                    filePath = relativePath,
-                                    offset = event.offset,
-                                )
-                            if (combinedEdit.isTooLarge() || combinedEdit.isNoOpDiff()) return@invokeLater
+                        if (editSequence.get() != sequence) return@invokeLater
+
+                        recentEditsHighRes.add(currentEdit)
+                        if (shouldCombine && previousEdit != null && recentEdits.lastOrNull() === previousEdit) {
                             recentEdits.replaceLast(combinedEdit)
                         } else {
-                            val editRecord =
-                                EditRecord(
-                                    originalText = lastDocumentText ?: "",
-                                    newText = newText,
-                                    filePath = relativePath,
-                                    offset = event.offset,
-                                )
-                            if (editRecord.isTooLarge() || editRecord.isNoOpDiff()) return@invokeLater
-                            recentEdits.add(editRecord)
+                            recentEdits.add(currentEdit)
                         }
 
                         lastDocumentText = newText

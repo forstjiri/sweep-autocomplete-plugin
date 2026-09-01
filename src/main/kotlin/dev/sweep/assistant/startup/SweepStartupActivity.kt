@@ -16,7 +16,6 @@ import dev.sweep.assistant.autocomplete.edit.AcceptEditCompletionAction
 import dev.sweep.assistant.autocomplete.edit.EditorActionsRouterService
 import dev.sweep.assistant.autocomplete.edit.RecentEditsTracker
 import dev.sweep.assistant.autocomplete.edit.RejectEditCompletionAction
-import dev.sweep.assistant.services.FeatureFlagService
 import dev.sweep.assistant.services.NotificationDeduplicationService
 import dev.sweep.assistant.services.RipgrepManager
 import dev.sweep.assistant.services.SweepProjectService
@@ -38,7 +37,6 @@ class SweepStartupActivity : ProjectActivity {
 
         // Initialize project-level services autocomplete depends on
         SweepProjectService.getInstance(project)
-        FeatureFlagService.getInstance(project)
         NotificationDeduplicationService.getInstance(project)
         RecentEditsTracker.getInstance(project)
 

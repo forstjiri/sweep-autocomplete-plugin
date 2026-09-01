@@ -3,7 +3,6 @@ package dev.sweep.assistant.autocomplete.edit
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
-import dev.sweep.assistant.services.FeatureFlagService
 import dev.sweep.assistant.utils.EvictingQueue
 
 @Service(Service.Level.PROJECT)
@@ -13,7 +12,6 @@ class AutocompleteRejectionCache(
     companion object {
         fun getInstance(project: Project): AutocompleteRejectionCache = project.getService(AutocompleteRejectionCache::class.java)
 
-        private const val REJECTION_THRESHOLD_FLAG = "autocomplete-rejection-cache-threshold-ms"
     }
 
     private val shownCache = EvictingQueue<Pair<String, Long>>(maxSize = 20) // Cache for shown suggestions
@@ -26,8 +24,7 @@ class AutocompleteRejectionCache(
     fun checkIfSuggestionShouldBeShown(suggestion: AutocompleteSuggestion): Boolean {
         // First check if any entries have timed out
         val currentTime = System.currentTimeMillis()
-        val autoCompleteRejectionCacheThresholdMs =
-            FeatureFlagService.getInstance(project).getNumericFeatureFlag(REJECTION_THRESHOLD_FLAG, 30_000).toLong()
+        val autoCompleteRejectionCacheThresholdMs = 30_000L
         // If the suggestion was rejected
         // previous rejection is a >80% substring of the current suggestion this handles deletions
         val suggestionInPreviousRejections =
@@ -45,7 +42,7 @@ class AutocompleteRejectionCache(
             return false
         }
         // also don't show if we've shown this suggestion 2x already, and it's not a ghost text
-        val maxShowCount = FeatureFlagService.getInstance(project).getNumericFeatureFlag("autocomplete_rejection_cache_max_show_count", 2)
+        val maxShowCount = 2
         return shownCache.count { it.first == suggestion.rejectionCacheKey() } < maxShowCount
     }
 

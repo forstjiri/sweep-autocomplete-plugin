@@ -32,7 +32,6 @@ import com.intellij.util.concurrency.annotations.RequiresReadLockAbsence
 import dev.sweep.assistant.autocomplete.Debouncer
 import dev.sweep.assistant.services.NextEditAutocompleteClient
 import dev.sweep.assistant.services.AutocompleteSnoozeService
-import dev.sweep.assistant.services.FeatureFlagService
 import dev.sweep.assistant.services.LocalAutocompleteServerManager
 import dev.sweep.assistant.services.NotificationDeduplicationService
 import dev.sweep.assistant.services.SweepProjectService
@@ -420,22 +419,6 @@ class RecentEditsTracker(
     @Volatile
     private var originalDocumentText: String = ""
 
-    // Track diagnostics with their first-seen timestamp
-    // Scoped per-project (persists across file switches), with a max size limit
-    private data class TrackedDiagnosticKey(
-        val filePath: String,
-        val startOffset: Int,
-        val endOffset: Int,
-        val message: String,
-    )
-
-    private data class TrackedDiagnosticInfo(
-        val timestamp: Long,
-    )
-
-    private val trackedDiagnostics = ConcurrentHashMap<TrackedDiagnosticKey, TrackedDiagnosticInfo>()
-    private val MAX_TRACKED_DIAGNOSTICS = 500
-
     var currentSuggestion: AutocompleteSuggestion? = null
     private var suggestionQueue: Queue<NextEditAutocompletion> = LinkedList()
     private var steeringAttempt = 0
@@ -492,13 +475,6 @@ class RecentEditsTracker(
     private val entityUsageSearchService = EntityUsageSearchService(project)
     private val newMethodContextService = NewMethodContextService(project)
 
-    // Cache for definition chunks - single entry cache keyed by editor state properties
-    private val definitionChunkCache =
-        DefinitionChunkCache(
-            ioScope = ioScope,
-            getDefinitions = { editorState -> entityUsageSearchService.getDefinitionsBeforeCursor(editorState) },
-        )
-
     private var clientIp: String? = null
 
     private var lastAcceptedTime: Long = System.currentTimeMillis()
@@ -513,13 +489,6 @@ class RecentEditsTracker(
      */
     fun scheduleAutocompleteWithPrefetch() {
         debouncer.schedule()
-
-        // Only prefetch if caching is enabled (feature flag is ON)
-        if (FeatureFlagService.getInstance(project).isFeatureEnabled("remove-debounce-for-entity-extraction-step")) {
-            getCurrentEditorState()?.let { editorState ->
-                definitionChunkCache.prefetch(editorState)
-            }
-        }
     }
 
     /**
@@ -1111,11 +1080,7 @@ class RecentEditsTracker(
 
                 val lastEditTime = recentEdits.lastOrNull()?.timestamp ?: 0
                 val currentTime = System.currentTimeMillis()
-                val cursorMovementThreshold =
-                    FeatureFlagService
-                        .getInstance(project)
-                        .getNumericFeatureFlag("cursor-movement-threshold", 60000)
-                        .toLong()
+                val cursorMovementThreshold = 60_000L
                 val cursorTrackingOrTutorialActive =
                     currentTime - lastEditTime < cursorMovementThreshold ||
                         getVirtualFileFromEditor(editor)?.name?.endsWith("tutorial.py") == true
@@ -1629,105 +1594,9 @@ class RecentEditsTracker(
         return EditorState(documentText, cursorLine, cursorOffset, filePath, editor.document.lineCount, currentLinePrefix)
     }
 
-    /**
-     * Fetches current editor diagnostics from the DocumentMarkupModel.
-     * This is a lightweight operation that reads already-populated highlights
-     * without triggering new analysis.
-     */
-    private fun getEditorDiagnostics(): List<EditorDiagnostic> {
-        if (!FeatureFlagService.getInstance(project).isFeatureEnabled("send_editor_diagnostics")) return emptyList()
-        val editor = getCurrentEditor() ?: return emptyList()
-        val document = editor.document
-
-        return try {
-            ApplicationManager.getApplication().runReadAction<List<EditorDiagnostic>> {
-                val markupModel =
-                    com.intellij.openapi.editor.impl.DocumentMarkupModel
-                        .forDocument(document, project, false)
-                        ?: return@runReadAction emptyList()
-
-                markupModel.allHighlighters
-                    .mapNotNull { highlighter ->
-                        val highlightInfo =
-                            com.intellij.codeInsight.daemon.impl.HighlightInfo
-                                .fromRangeHighlighter(highlighter)
-                                ?: return@mapNotNull null
-
-                        // Only include errors and warnings (severity >= WARNING)
-                        if (highlightInfo.severity.myVal < com.intellij.lang.annotation.HighlightSeverity.WARNING.myVal) {
-                            return@mapNotNull null
-                        }
-
-                        val description =
-                            highlightInfo.description?.takeIf { it.isNotBlank() }
-                                ?: return@mapNotNull null
-
-                        val startOffset = highlightInfo.actualStartOffset.coerceIn(0, document.textLength)
-                        val lineNumber = document.getLineNumber(startOffset) + 1 // 1-based
-
-                        // Format: [SEVERITY_TYPE] message
-                        val inspectionId = highlightInfo.inspectionToolId
-                        val formattedMessage =
-                            if (inspectionId != null) {
-                                "[$inspectionId] $description"
-                            } else {
-                                "[${highlightInfo.severity.myName.uppercase()}] $description"
-                            }
-
-                        val filePath = getVirtualFileFromEditor(editor)?.path ?: return@mapNotNull null
-                        val key =
-                            TrackedDiagnosticKey(
-                                filePath = filePath,
-                                startOffset = highlightInfo.actualStartOffset,
-                                endOffset = highlightInfo.actualEndOffset,
-                                message = formattedMessage,
-                            )
-
-                        // Get or create tracking info for this diagnostic
-                        val trackingInfo =
-                            trackedDiagnostics.getOrPut(key) {
-                                evictOldDiagnosticsIfNeeded()
-                                TrackedDiagnosticInfo(
-                                    timestamp = System.currentTimeMillis(),
-                                )
-                            }
-
-                        EditorDiagnostic(
-                            line = lineNumber,
-                            start_offset = highlightInfo.actualStartOffset,
-                            end_offset = highlightInfo.actualEndOffset,
-                            severity = highlightInfo.severity.myName,
-                            message = formattedMessage,
-                            timestamp = trackingInfo.timestamp,
-                        )
-                    }.distinctBy { Triple(it.start_offset, it.end_offset, it.message) }
-                    .take(50) // Limit to avoid sending too many diagnostics
-            }
-        } catch (e: Exception) {
-            logger.warn("Failed to get editor diagnostics", e)
-            emptyList()
-        }
-    }
-
     private fun updateOriginalDocumentText() {
         getCurrentEditor()?.let { editor ->
             originalDocumentText = editor.document.text
-        }
-    }
-
-    /**
-     * Evicts the oldest diagnostics if the map exceeds the max size.
-     */
-    private fun evictOldDiagnosticsIfNeeded() {
-        if (trackedDiagnostics.size >= MAX_TRACKED_DIAGNOSTICS) {
-            // Remove the oldest 10% of entries
-            val numToRemove = MAX_TRACKED_DIAGNOSTICS / 10
-            val oldestKeys =
-                trackedDiagnostics.entries
-                    .sortedBy { it.value.timestamp }
-                    .take(numToRemove)
-                    .map { it.key }
-            oldestKeys.forEach { trackedDiagnostics.remove(it) }
         }
     }
 
@@ -2450,18 +2319,10 @@ class RecentEditsTracker(
                     }.getOrElse { emptyList() }
                 if (shouldAbort()) return null
 
-                // Feature flag: when enabled, use the cache for definition chunks
-                // When disabled, fetch definitions synchronously (no caching)
-                val useDefinitionCache =
-                    FeatureFlagService.getInstance(project).isFeatureEnabled("remove-debounce-for-entity-extraction-step")
                 val definitionChunks =
-                    if (useDefinitionCache) {
-                        definitionChunkCache.getOrFetch(editorState)
-                    } else {
-                        runCatching {
-                            entityUsageSearchService.getDefinitionsBeforeCursor(editorState)
-                        }.getOrElse { emptyList() }
-                    }
+                    runCatching {
+                        entityUsageSearchService.getDefinitionsBeforeCursor(editorState)
+                    }.getOrElse { emptyList() }
                 if (shouldAbort()) return null
 
                 val usageChunks =
@@ -2526,8 +2387,8 @@ class RecentEditsTracker(
                             ).map { it.formattedDiff }
                             .filter { it.length <= MAX_DIFF_HUNK_SIZE }
                             .joinToString("\n"),
-                    changes_above_cursor = FeatureFlagService.getInstance(project).isFeatureEnabled("autocomplete-changes-above-cursor"),
-                     editor_diagnostics = getEditorDiagnostics(),
+                    changes_above_cursor = false,
+                    editor_diagnostics = emptyList(),
                     steering = steering,
                     automatic_steering = autoSteering,
                     avoid_completions = avoidCompletions.take(10),
@@ -2742,9 +2603,6 @@ class RecentEditsTracker(
         }
 
         acceptedImportFixes.clear()
-
-        // Clear diagnostic tracking
-        trackedDiagnostics.clear()
 
         // Dispose lookup UI customizer
         lookupUICustomizer?.dispose()

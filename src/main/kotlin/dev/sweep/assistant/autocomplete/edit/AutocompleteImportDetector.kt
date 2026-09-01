@@ -22,7 +22,6 @@ import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
 import com.intellij.psi.SyntaxTraverser
 import com.intellij.util.concurrency.AppExecutorUtil
-import dev.sweep.assistant.services.FeatureFlagService
 import dev.sweep.assistant.services.SweepProjectService
 import java.util.Locale.getDefault
 import java.util.UUID
@@ -544,10 +543,7 @@ class AutocompleteImportDetector(
     ): Boolean {
         // On Linux, use a simple check for the feature flag value in family name
         if (System.getProperty("os.name").lowercase().contains("linux")) {
-            val checkString =
-                FeatureFlagService
-                    .getInstance(project)
-                    .getStringFeatureFlag("linux-autocomplete-family-name-check", "import")
+            val checkString = "import"
             logger.info("isImportFix check - familyName: $familyName, ideName: $ideName, checkString: $checkString")
             return familyName.lowercase().contains(checkString.lowercase()) &&
                 !familyName.lowercase().contains("optimize")

@@ -1,7 +1,6 @@
 package dev.sweep.assistant.autocomplete.edit
 
 import com.intellij.openapi.project.Project
-import dev.sweep.assistant.services.FeatureFlagService
 import dev.sweep.assistant.utils.getDiff
 import dev.sweep.assistant.utils.readFile
 
@@ -128,7 +127,7 @@ fun fuseAndDedupSnippets(
 
 fun isFileTooLarge(
     fileContent: String,
-    project: Project,
+    @Suppress("UNUSED_PARAMETER") project: Project,
 ): Boolean {
     if (fileContent.length > 10_000_000) {
         return true
@@ -137,10 +136,7 @@ fun isFileTooLarge(
     if (lines.size > 50_000) {
         return true
     }
-    val avgLineLengthThreshold =
-        project.let {
-            FeatureFlagService.getInstance(it).getNumericFeatureFlag("autocomplete-avg-line-length-threshold", 240)
-        }
+    val avgLineLengthThreshold = 240
     if (fileContent.length / (lines.size + 1) > avgLineLengthThreshold) {
         return true
     }

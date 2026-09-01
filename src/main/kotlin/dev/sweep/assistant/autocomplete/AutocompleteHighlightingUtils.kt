@@ -2,9 +2,8 @@
 
 package dev.sweep.assistant.autocomplete
 
-import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.project.Project
-import dev.sweep.assistant.services.FeatureFlagService
+import com.intellij.openapi.application.ApplicationInfo
 
 /**
  * Adjusts the provided fullContext string based on the running IDE.
@@ -43,30 +42,4 @@ fun adjustFullContextForIde(fullContext: String): String =
  *
  * This will be expanded later with IDE-specific behavior.
  */
-fun shouldRunAnnotatorsForSemanticHighlights(project: Project?): Boolean =
-    try {
-        val appName = ApplicationInfo.getInstance().fullApplicationName
-        val ideKey =
-            when {
-                appName.contains("PhpStorm", ignoreCase = true) -> "phpstorm"
-                appName.contains("PyCharm", ignoreCase = true) -> "pycharm"
-                appName.contains("DataGrip", ignoreCase = true) -> "datagrip"
-                appName.contains("CLion", ignoreCase = true) -> "clion"
-                appName.contains("RustRover", ignoreCase = true) -> "rustrover"
-                appName.contains("Android Studio", ignoreCase = true) -> "android-studio"
-                appName.contains("RubyMine", ignoreCase = true) -> "rubymine"
-                appName.contains("Rider", ignoreCase = true) -> "rider"
-                appName.contains("GoLand", ignoreCase = true) -> "goland"
-                appName.contains("WebStorm", ignoreCase = true) -> "webstorm"
-                appName.contains("IntelliJ", ignoreCase = true) || appName.contains("IDEA", ignoreCase = true) -> "intellij"
-                else -> null
-            }
-
-        ideKey?.let { key ->
-            val flagKey = "$key-run-annotators"
-            project?.let { FeatureFlagService.getInstance(it).isFeatureEnabled(flagKey) } ?: false
-        } ?: false
-    } catch (e: Exception) {
-        // Be conservative: do NOT run annotators on failure – they can be heavy and less cancellable
-        false
-    }
+fun shouldRunAnnotatorsForSemanticHighlights(@Suppress("UNUSED_PARAMETER") project: Project?): Boolean = false

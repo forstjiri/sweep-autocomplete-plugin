@@ -12,7 +12,6 @@ import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.PsiSearchHelper
 import com.intellij.util.concurrency.AppExecutorUtil
-import dev.sweep.assistant.services.FeatureFlagService
 import dev.sweep.assistant.utils.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Future
@@ -37,11 +36,9 @@ class EntityUsageSearchService(
         const val MAX_DROPDOWN_TIMEOUT_MS = 30L
     }
 
-    private val numDefinitionsToFetch: Int
-        get() = FeatureFlagService.getInstance(project).getNumericFeatureFlag("entity-usage-num-def-to-fetch", 6)
+    private val numDefinitionsToFetch = 6
 
-    private val numUsagesToFetch: Int
-        get() = FeatureFlagService.getInstance(project).getNumericFeatureFlag("entity-usage-num-usages-to-fetch", 6)
+    private val numUsagesToFetch = 6
 
     // Cache for individual term results - key is single term, value is the found occurrences for that term
     private val termCache =

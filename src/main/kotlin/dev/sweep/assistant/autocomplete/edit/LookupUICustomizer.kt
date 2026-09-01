@@ -9,7 +9,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
-import dev.sweep.assistant.services.FeatureFlagService
 import dev.sweep.assistant.settings.SweepMetaData
 import java.awt.BorderLayout
 import java.awt.Font
@@ -40,13 +39,6 @@ class LookupUICustomizer(
                 if (event.propertyName == LookupManager.PROP_ACTIVE_LOOKUP) {
                     val lookup = event.newValue as? Lookup
                     if (lookup is LookupImpl) {
-                        if (FeatureFlagService.getInstance(project).isFeatureEnabled("cancel_autocomplete_when_dropdown_appears")) {
-                            // Cancel current autocomplete and refetch when lookup appears
-                            val tracker = RecentEditsTracker.getInstance(project)
-                            tracker.clearAutocomplete(AutocompleteDisposeReason.LOOKUP_SHOWN)
-                            tracker.scheduleAutocompleteWithPrefetch()
-                        }
-
                         // Customize the lookup UI when it becomes active
                         ApplicationManager.getApplication().invokeLater {
                             customizeLookupUI(lookup)

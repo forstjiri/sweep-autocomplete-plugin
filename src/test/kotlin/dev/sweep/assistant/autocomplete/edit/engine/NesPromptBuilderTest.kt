@@ -1,5 +1,6 @@
 package dev.sweep.assistant.autocomplete.edit.engine
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -35,8 +36,6 @@ class NesPromptBuilderTest {
             recentChanges = "",
             cursorPosition = fileContents.indexOf("total +="),
             codeBlock = fileContents,
-            prefix = "",
-            suffix = "",
             blockStartIndex = 0,
             fileChunks = fileChunks,
             steering = steering,
@@ -81,5 +80,20 @@ class NesPromptBuilderTest {
         assertTrue(result.formattedPrompt.length + bigChunk.content.length > NesConstants.CHARACTER_BOUND_TO_CHECK_TOKENIZATION)
         assertTrue(result.formattedPrompt.contains("<steering>"))
         assertTrue(result.formattedPrompt.contains("Try another location."))
+    }
+
+    @Test
+    fun `cursor block covers 10 lines above and below the cursor`() {
+        // Sweep blog (oss-next-edit): the rewrite window is 10 lines above +
+        // cursor + 10 lines below.
+        val contents = (1..40).joinToString("") { "val item$it = $it\n" }
+        val cursorAt15 = contents.indexOf("val item15")
+
+        val block = NesPromptBuilder.getBlockAtCursor(contents, cursorAt15)
+
+        assertTrue(block.codeBlock.startsWith("val item5 = 5\n"), block.codeBlock.take(40))
+        assertTrue(block.codeBlock.contains("val item25 = 25\n"))
+        assertFalse(block.codeBlock.contains("val item26 = 26\n"))
+        assertEquals(contents.indexOf("val item5 = 5\n"), block.blockStartIndex)
     }
 }

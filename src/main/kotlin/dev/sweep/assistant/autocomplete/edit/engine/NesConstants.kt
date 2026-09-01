@@ -5,13 +5,12 @@ package dev.sweep.assistant.autocomplete.edit.engine
  * Ported from Python sweep_autocomplete.
  */
 object NesConstants {
-    // Block extraction around cursor
-    const val NUM_LINES_BEFORE = 2
-    const val NUM_LINES_AFTER = 5
-
-    // Wider window for the steering matrix's V3 fallback context
-    const val WIDER_NUM_LINES_BEFORE = 6
-    const val WIDER_NUM_LINES_AFTER = 12
+    // Block extraction around cursor.
+    // Sweep blog (oss-next-edit): a fixed window of 10 lines above and below
+    // the cursor was found optimal — smaller windows starve the model of
+    // structural context and produce locally-plausible but irrelevant edits.
+    const val NUM_LINES_BEFORE = 10
+    const val NUM_LINES_AFTER = 10
 
     // Token estimation
     const val CHARS_PER_TOKEN = 3.5

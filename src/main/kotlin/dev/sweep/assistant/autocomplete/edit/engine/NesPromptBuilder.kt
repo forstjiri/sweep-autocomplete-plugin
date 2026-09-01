@@ -20,8 +20,6 @@ object NesPromptBuilder {
 
     data class BlockAtCursor(
         val codeBlock: String,
-        val prefix: String,
-        val suffix: String,
         val blockStartIndex: Int,
     )
 
@@ -47,25 +45,19 @@ object NesPromptBuilder {
 
     /**
      * Extract the code block surrounding the cursor position.
-     * Ported from Python get_block_at_cursor().
+     * Ported from Python get_block_at_cursor(); window sized per the Sweep
+     * blog (10 lines above / 10 below the cursor).
      */
-    fun getBlockAtCursor(
-        fileContents: String,
-        cursorPosition: Int,
-        numLinesBefore: Int = NUM_LINES_BEFORE,
-        numLinesAfter: Int = NUM_LINES_AFTER,
-    ): BlockAtCursor {
+    fun getBlockAtCursor(fileContents: String, cursorPosition: Int): BlockAtCursor {
         val lines = fileContents.linesSplitKeepEnds()
         val cursorLine = NesUtils.getLineNumberFromPosition(fileContents, cursorPosition)
-        val (codeBlock, prefix, suffix) = getBlockAroundCursorLine(
-            lines, cursorLine, numLinesBefore, numLinesAfter
-        )
-        val blockStartLine = max(0, cursorLine - numLinesBefore)
+        val codeBlock = getBlockAroundCursorLine(lines, cursorLine, NUM_LINES_BEFORE, NUM_LINES_AFTER)
+        val blockStartLine = max(0, cursorLine - NUM_LINES_BEFORE)
         val blockStartIndex = lines.take(blockStartLine).sumOf { it.length }
 
         val truncatedBlock = truncateCodeBlockByTokens(codeBlock)
 
-        return BlockAtCursor(truncatedBlock, prefix, suffix, blockStartIndex)
+        return BlockAtCursor(truncatedBlock, blockStartIndex)
     }
 
     private fun getBlockAroundCursorLine(
@@ -73,7 +65,7 @@ object NesPromptBuilder {
         cursorLine: Int,
         numLinesBefore: Int,
         numLinesAfter: Int,
-    ): Triple<String, String, String> {
+    ): String {
         var blockStart = max(0, cursorLine - numLinesBefore)
         var blockEnd = min(lines.size, cursorLine + numLinesAfter + 1)
 
@@ -86,16 +78,11 @@ object NesPromptBuilder {
         }
 
         var currentBlock = lines.subList(blockStart, blockEnd).joinToString("")
-        val prefixStart = max(0, blockStart - 10)
-        val prefix = lines.subList(prefixStart, blockStart).joinToString("").trim('\n')
-        val suffixEnd = min(lines.size, blockEnd + 10)
-        val suffix = lines.subList(blockEnd, suffixEnd).joinToString("").trim('\n')
-
         if (currentBlock.endsWith("\n")) {
             currentBlock = currentBlock.trimEnd('\n') + "\n"
         }
 
-        return Triple(currentBlock, prefix, suffix)
+        return currentBlock
     }
 
     /** Public access for the engine's retrieval pass. */
@@ -210,8 +197,6 @@ object NesPromptBuilder {
         recentChanges: String,
         cursorPosition: Int,
         codeBlock: String,
-        prefix: String,
-        suffix: String,
         blockStartIndex: Int,
         fileChunks: List<FileChunkData> = emptyList(),
         retrievalChunks: List<FileChunkData> = emptyList(),

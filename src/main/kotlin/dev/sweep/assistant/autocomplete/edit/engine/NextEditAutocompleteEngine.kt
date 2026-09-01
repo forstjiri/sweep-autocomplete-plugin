@@ -2,11 +2,10 @@ package dev.sweep.assistant.autocomplete.edit.engine
 
 import com.intellij.openapi.diagnostic.Logger
 import dev.sweep.assistant.autocomplete.edit.engine.NesCompletionParser.AutocompleteResult
+import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.MAX_RETRIEVAL_CHUNKS
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.MAX_RETRIEVAL_CHUNK_SIZE_LINES
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.NUM_LINES_AFTER
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.NUM_LINES_BEFORE
-import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.WIDER_NUM_LINES_AFTER
-import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.WIDER_NUM_LINES_BEFORE
 import java.util.UUID
 import java.util.Collections
 import kotlin.math.max
@@ -89,20 +88,25 @@ class NextEditAutocompleteEngine(
             )
         }
 
+        // Determine if this is a steered ("next suggestion") request up front —
+        // steered requests get more retrieval context (quality over latency);
+        // plain typing keeps a single chunk for speed.
+        val steered = request.steering != null || request.avoidCompletions.isNotEmpty()
+
         // Limit chunks for local model
         val fileChunks = request.fileChunks.take(1)
-        val limitedRetrievalChunks = retrievalChunks.take(1)
+        val limitedRetrievalChunks =
+            if (steered) retrievalChunks.take(MAX_RETRIEVAL_CHUNKS) else retrievalChunks.take(1)
 
         // Determine if ghost text should be forced
         val forceGhostText = request.recentUserActions.isEmpty() ||
             request.recentUserActions.lastOrNull()?.actionType == "INSERT_CHAR"
 
         // Steering matrix: steered requests walk context variants (V1 cursor
-        // block, V2/V3 retrieval/expanded blocks) at 0.35, then again at 0.8.
-        // Context changes beat temperature changes, so variants come first.
-        // Plain typing keeps today's behavior: cursor block, then one
-        // retrieval pass, both greedy.
-        val steered = request.steering != null || request.avoidCompletions.isNotEmpty()
+        // block, V2/V3 retrieval blocks) at 0.35, then again at 0.8. Context
+        // changes beat temperature changes, so variants come first. Plain
+        // typing keeps today's behavior: cursor block, then one retrieval
+        // pass, both greedy.
         val rounds = if (steered) NesUtils.steeringMatrixTemperatures() else listOf(0.0f)
         val candidates =
             buildPassCandidates(request, block, cursorPosition, limitedRetrievalChunks, steered)
@@ -129,8 +133,6 @@ class NextEditAutocompleteEngine(
                         recentChanges = request.recentChanges,
                         cursorPosition = candidate.cursorPosition,
                         codeBlock = candidate.codeBlock,
-                        prefix = candidate.prefix,
-                        suffix = candidate.suffix,
                         blockStartIndex = candidate.blockStartIndex,
                         autocompleteId = autocompleteId,
                         fileChunks = fileChunks,
@@ -183,8 +185,6 @@ class NextEditAutocompleteEngine(
     private data class PassCandidate(
         val contextLabel: String,
         val codeBlock: String,
-        val prefix: String,
-        val suffix: String,
         val cursorPosition: Int,
         val blockStartIndex: Int,
         val retrievalChunks: List<NesPromptBuilder.FileChunkData>,
@@ -194,7 +194,7 @@ class NextEditAutocompleteEngine(
      * Context variants for the steering matrix:
      * - V1: block at cursor (always)
      * - V2: best retrieval match (needs recent changes)
-     * - V3: second retrieval match, or a wider window around the cursor
+     * - V3: second retrieval match
      * Automatic requests keep V1 + V2 only.
      */
     private fun buildPassCandidates(
@@ -209,21 +209,13 @@ class NextEditAutocompleteEngine(
                 PassCandidate(
                     contextLabel = "cursor",
                     codeBlock = cursorBlock.codeBlock,
-                    prefix = cursorBlock.prefix,
-                    suffix = cursorBlock.suffix,
                     cursorPosition = cursorPosition,
                     blockStartIndex = cursorBlock.blockStartIndex,
                     retrievalChunks = limitedRetrievalChunks,
                 ),
             )
 
-        if (request.recentChanges.isEmpty()) {
-            if (steered) {
-                buildWiderCursorCandidate(request.fileContents, cursorPosition, limitedRetrievalChunks, cursorBlock.codeBlock)
-                    ?.let { candidates.add(it) }
-            }
-            return candidates
-        }
+        if (request.recentChanges.isEmpty()) return candidates
 
         val maxRetrievalVariants = if (steered) 2 else 1
         val retrievalVariants =
@@ -239,12 +231,6 @@ class NextEditAutocompleteEngine(
                 .take(maxRetrievalVariants)
                 .mapNotNull { buildRetrievalCandidate(request.fileContents, it, limitedRetrievalChunks) }
         candidates.addAll(retrievalVariants)
-
-        // Not enough distinct retrieval variants — widen the window as V3.
-        if (steered && candidates.size < 3) {
-            buildWiderCursorCandidate(request.fileContents, cursorPosition, limitedRetrievalChunks, cursorBlock.codeBlock)
-                ?.let { candidates.add(it) }
-        }
         return candidates
     }
 
@@ -291,38 +277,9 @@ class NextEditAutocompleteEngine(
         return PassCandidate(
             contextLabel = if (retrieval.diagnostic != null) "diagnostic" else if (retrieval.isBlockAfterCursor) "after-cursor" else "retrieval",
             codeBlock = fullBlock,
-            prefix = retrievedPrefix,
-            suffix = retrievedSuffix,
             cursorPosition = cursorInBlock,
             blockStartIndex = retrieval.blockStartOffset,
             retrievalChunks = extraChunks,
-        )
-    }
-
-    /** V3 fallback: the same edit position seen through a wider window. */
-    private fun buildWiderCursorCandidate(
-        fileContents: String,
-        cursorPosition: Int,
-        limitedRetrievalChunks: List<NesPromptBuilder.FileChunkData>,
-        cursorBlockCode: String,
-    ): PassCandidate? {
-        val wider =
-            NesPromptBuilder.getBlockAtCursor(
-                fileContents,
-                cursorPosition,
-                numLinesBefore = WIDER_NUM_LINES_BEFORE,
-                numLinesAfter = WIDER_NUM_LINES_AFTER,
-            )
-        if (wider.codeBlock == cursorBlockCode) return null
-        if (NesUtils.shouldDisableForCodeBlock(wider.codeBlock)) return null
-        return PassCandidate(
-            contextLabel = "wider-cursor",
-            codeBlock = wider.codeBlock,
-            prefix = wider.prefix,
-            suffix = wider.suffix,
-            cursorPosition = cursorPosition,
-            blockStartIndex = wider.blockStartIndex,
-            retrievalChunks = limitedRetrievalChunks,
         )
     }
 
@@ -333,8 +290,6 @@ class NextEditAutocompleteEngine(
         recentChanges: String,
         cursorPosition: Int,
         codeBlock: String,
-        prefix: String,
-        suffix: String,
         blockStartIndex: Int,
         autocompleteId: String,
         fileChunks: List<NesPromptBuilder.FileChunkData>,
@@ -355,8 +310,6 @@ class NextEditAutocompleteEngine(
             recentChanges = recentChanges,
             cursorPosition = cursorPosition,
             codeBlock = codeBlock,
-            prefix = prefix,
-            suffix = suffix,
             blockStartIndex = blockStartIndex,
             fileChunks = fileChunks,
             retrievalChunks = retrievalChunks,

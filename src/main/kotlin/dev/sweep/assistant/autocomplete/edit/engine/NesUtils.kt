@@ -224,11 +224,10 @@ object NesUtils {
             val outputStart = delta.target.position + 1
             val outputLinesList = delta.target.lines.map { it }
 
-            // Match Python's off-by-one edge case when input_lines is empty
-            if (inputLinesList.isEmpty()) {
-                inputStart += 1
-            }
-
+            // Unlike Python difflib (which reports the previous line for pure
+            // insertions, compensated by parseHunk's +1), java-diff-utils
+            // already reports the 0-based insertion point. Adding +1 here
+            // anchored every pure insertion one line below its true position.
             HunkParseResult(inputStart, inputLinesList, outputStart, outputLinesList)
         }
     }

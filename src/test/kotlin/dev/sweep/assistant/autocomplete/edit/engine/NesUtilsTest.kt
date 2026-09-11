@@ -118,6 +118,22 @@ class NesUtilsTest {
     // --- split_into_diff_hunks ---
 
     @Test
+    fun `splitIntoDiffHunks anchors pure insertions before the correct line`() {
+        val inputContent = "line1\nline2\nline3\nline4\n"
+        val outputContent = "line1\nline2\ninserted\nline3\nline4\n"
+
+        val result = NesUtils.splitIntoDiffHunks(inputContent, outputContent)
+
+        // Insertion goes before 0-based line 2 ("line3"); inputStart stays at
+        // the 1-based number of the line it precedes — NOT one line further.
+        val hunk = result.single()
+        assertTrue(hunk.inputLines.isEmpty())
+        assertEquals(listOf("inserted\n"), hunk.outputLines)
+        assertEquals(3, hunk.inputStart)
+        assertEquals(3, hunk.outputStart)
+    }
+
+    @Test
     fun `splitIntoDiffHunks matches Python semantically`() {
         val fixture = fixtures["split_into_diff_hunks"].asJsonObject
         val inputContent = fixture["input"].asJsonObject["input_content"].asString

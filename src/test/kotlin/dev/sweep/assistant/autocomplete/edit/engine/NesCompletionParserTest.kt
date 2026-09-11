@@ -150,6 +150,27 @@ class NesCompletionParserTest {
     }
 
     @Test
+    fun `pure insertion hunk lands at the model's insertion point`() {
+        val block = "a\nb\nc\nd\ne\n"
+        val fileContents = "head\n$block"
+        val blockStart = fileContents.indexOf(block)
+        val completion = "a\nb\ninserted\nc\nd\ne\n"
+
+        val results = NesCompletionParser.selectBestHunkFromCompletion(
+            completionRaw = completion,
+            cleanedCodeBlockRaw = block,
+            fileContents = fileContents,
+            cursorPosition = blockStart + "a\nb\n".length,
+            autocompleteId = "test",
+            codeBlockStartIndex = blockStart,
+        )
+
+        val insertion = results.single()
+        assertEquals(blockStart + "a\nb\n".length, insertion.startIndex)
+        assertEquals("inserted\n", insertion.completion)
+    }
+
+    @Test
     fun `selectBestHunk uses the supplied repeated block offset`() {
         val block = "same\nsuffix\n"
         val fileContents = "header\n$block between\n$block"

@@ -13,7 +13,7 @@ val pluginId = "dev.forstjiri.vulcansweep"
 val pluginName = "Vulcan Sweep"
 println("Building plugin: $pluginName with ID: $pluginId")
 group = "dev.sweep"
-version = "1.32.11"
+version = "1.32.12"
 
 repositories {
     mavenCentral()
@@ -38,7 +38,7 @@ intellijPlatform {
                 types.set(listOf(IntelliJPlatformType.IntellijIdeaCommunity))
                 channels.set(listOf(ProductRelease.Channel.RELEASE))
                 sinceBuild.set("251")
-                untilBuild.set("252.*")
+                untilBuild.set("262.*")
             }
         }
     }
@@ -57,7 +57,9 @@ tasks {
 
     patchPluginXml {
         sinceBuild.set("251")
-        untilBuild.set("262.*")
+        // Unlimited compatibility: explicitly remove until-build (otherwise
+        // the value from the source plugin.xml would be kept).
+        untilBuild = provider { null as String? }
     }
 
     signPlugin {

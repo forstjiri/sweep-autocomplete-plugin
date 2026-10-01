@@ -120,12 +120,12 @@ class SweepSettings : PersistentStateComponent<SweepSettings> {
     }
 
     fun runNowAndOnSettingsChange(
-        project: Project,
+        @Suppress("UNUSED_PARAMETER") project: Project,
         parentDisposable: Disposable,
         callback: SweepSettings.() -> Unit,
     ) {
         this.callback()
-        project.messageBus.connect(parentDisposable).subscribe(
+        ApplicationManager.getApplication().messageBus.connect(parentDisposable).subscribe(
             SettingsChangedNotifier.TOPIC,
             SettingsChangedNotifier {
                 getInstance().callback()

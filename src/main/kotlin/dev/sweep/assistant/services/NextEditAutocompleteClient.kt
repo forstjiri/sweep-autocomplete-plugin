@@ -35,7 +35,7 @@ class NextEditAutocompleteClient(
         request: NextEditAutocompleteRequest,
         shouldAbort: () -> Boolean = { false },
     ): NextEditAutocompleteResponse? {
-        if (shouldAbort()) return null
+        if (shouldAbort() || !SweepSettings.getInstance().nextEditPredictionFlagOn) return null
         val serverManager = LocalAutocompleteServerManager.getInstance()
         val serverHealthy = serverManager.recentServerHealth() ?: serverManager.isServerHealthy()
         if (!serverHealthy) {

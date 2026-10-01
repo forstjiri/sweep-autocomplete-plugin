@@ -1042,8 +1042,17 @@ class RecentEditsTracker(
 
                 launchAutocompleteConsumerWorker()
             } else if (!nextEditPredictionFlagOn && editorFactoryListener != null) {
-                // Cleanup
+                // Cleanup immediately so disabling from the status bar cannot leave
+                // a queued autocomplete request that starts the terminal server.
                 cleanupFocusTracking()
+                clearAutocomplete(AutocompleteDisposeReason.AUTOCOMPLETE_DISPOSED)
+                currentJob?.cancel()
+                currentJob = null
+                fetchJobs.forEach { (_, fetchJob) ->
+                    fetchJob.job.cancel()
+                    fetchJob.deferred.cancel()
+                }
+                fetchJobs.clear()
                 consumerJob?.cancel()
                 consumerJob = null
             }
@@ -1626,6 +1635,11 @@ class RecentEditsTracker(
     }
 
     fun processLatestEdit(steering: String? = null) {
+        if (!SweepSettings.getInstance().nextEditPredictionFlagOn) {
+            clearAutocomplete(AutocompleteDisposeReason.AUTOCOMPLETE_DISPOSED)
+            return
+        }
+
         if (steering == null) {
             steeringAttempt = 0
             lastSteeredCompletion = null

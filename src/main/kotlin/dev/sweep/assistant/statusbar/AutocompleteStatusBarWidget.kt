@@ -148,28 +148,32 @@ class AutocompleteStatusBarWidget(
     }
 
     private fun showPopupMenu(event: MouseEvent) {
-        val items = mutableListOf<String>()
-        val actions = mutableListOf<() -> Unit>()
+        data class MenuItem(
+            val label: String,
+            val action: (() -> Unit)? = null,
+        )
 
+        val items = mutableListOf<MenuItem>()
         val settings = SweepSettings.getInstance()
-        items.add("Local server: ${when {
-            isChecking -> "checking..."
-            isAlive -> "running"
-            else -> "not running"
-        }}")
-        actions.add { }
+        items.add(
+            MenuItem(
+                "Local server: ${when {
+                    isChecking -> "checking..."
+                    isAlive -> "running"
+                    else -> "not running"
+                }}",
+            ),
+        )
+        items.add(MenuItem("Vulcan Sweep: ${if (settings.nextEditPredictionFlagOn) "enabled" else "disabled"}"))
 
         if (settings.nextEditPredictionFlagOn) {
-            items.add("Disable Vulcan Sweep")
-            actions.add { settings.nextEditPredictionFlagOn = false; updateWidget() }
+            items.add(MenuItem("Turn off Vulcan Sweep") { settings.nextEditPredictionFlagOn = false; updateWidget() })
         } else {
-            items.add("Enable Vulcan Sweep")
-            actions.add { settings.nextEditPredictionFlagOn = true; updateWidget() }
+            items.add(MenuItem("Turn on Vulcan Sweep") { settings.nextEditPredictionFlagOn = true; updateWidget() })
         }
 
         if (snoozeService.isAutocompleteSnooze()) {
-            items.add("Cancel snooze (${snoozeService.formatRemainingTime()} remaining)")
-            actions.add { snoozeService.unsnooze(); updateWidget() }
+            items.add(MenuItem("Cancel snooze (${snoozeService.formatRemainingTime()} remaining)") { snoozeService.unsnooze(); updateWidget() })
         } else {
             listOf(
                 "Snooze for 5 minutes" to AutocompleteSnoozeService.SNOOZE_5_MINUTES,
@@ -178,37 +182,44 @@ class AutocompleteStatusBarWidget(
                 "Snooze for 1 hour" to AutocompleteSnoozeService.SNOOZE_1_HOUR,
                 "Snooze for 2 hours" to AutocompleteSnoozeService.SNOOZE_2_HOURS,
             ).forEach { (label, duration) ->
-                items.add(label)
-                actions.add { snoozeService.snoozeAutocomplete(duration); updateWidget() }
+                items.add(MenuItem(label) { snoozeService.snoozeAutocomplete(duration); updateWidget() })
             }
         }
 
-        items.add("Retry connection to local server")
-        actions.add {
-            scope.launch {
-                LocalAutocompleteServerManager.getInstance().startServerInTerminal(project)
-                isAlive = LocalAutocompleteServerManager.getInstance().isServerHealthy()
-                updateWidget()
-            }
+        if (settings.nextEditPredictionFlagOn) {
+            items.add(
+                MenuItem("Retry connection to local server") {
+                    scope.launch {
+                        LocalAutocompleteServerManager.getInstance().startServerInTerminal(project)
+                        isAlive = LocalAutocompleteServerManager.getInstance().isServerHealthy()
+                        updateWidget()
+                    }
+                },
+            )
+
+            items.add(
+                MenuItem("Restart terminal server") {
+                    LocalAutocompleteServerManager.getInstance().restartServerInTerminal(project)
+                    isAlive = false
+                    updateWidget()
+                },
+            )
         }
 
-        items.add("Restart terminal server")
-        actions.add {
-            LocalAutocompleteServerManager.getInstance().restartServerInTerminal(project)
-            isAlive = false
-            updateWidget()
-        }
+        items.add(
+            MenuItem("Open settings") {
+                ShowSettingsUtil.getInstance().showSettingsDialog(project, SweepSettingsConfigurable::class.java)
+            },
+        )
 
-        items.add("Open settings")
-        actions.add {
-            ShowSettingsUtil.getInstance().showSettingsDialog(project, SweepSettingsConfigurable::class.java)
-        }
+        val step = object : BaseListPopupStep<MenuItem>("Vulcan Sweep", items) {
+            override fun getTextFor(value: MenuItem): String = value.label
 
-        val step = object : BaseListPopupStep<String>("Vulcan Sweep", items) {
-            override fun onChosen(selectedValue: String, finalChoice: Boolean): PopupStep<*>? {
+            override fun isSelectable(value: MenuItem): Boolean = value.action != null
+
+            override fun onChosen(selectedValue: MenuItem, finalChoice: Boolean): PopupStep<*>? {
                 if (finalChoice) {
-                    val index = items.indexOf(selectedValue)
-                    if (index >= 0) actions[index].invoke()
+                    selectedValue.action?.invoke()
                 }
                 return PopupStep.FINAL_CHOICE
             }

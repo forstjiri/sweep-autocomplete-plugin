@@ -37,15 +37,20 @@ Vulcan Sweep needs two things on your machine:
 1. **`llama-server`** — the inference engine from [llama.cpp](https://github.com/ggml-org/llama.cpp).
    When it is not found, the plugin shows a notification with an
    **Install llama-server** button that downloads the official Vulkan build
-   into `~/.cache/sweep/llama.cpp` and starts the server for you. Prefer a
-   system-wide install? Any of these work too:
+   into `~/.cache/sweep/llama.cpp` and starts the server for you — on Linux,
+   macOS, and Windows. Prefer a system-wide install? Any of these work too:
    - macOS: `brew install llama.cpp`
    - Linux: a package (e.g. `conda install -c conda-forge llama.cpp`) or build it
      with Vulkan for AMD GPUs: `cmake -B build -DGGML_VULKAN=ON && cmake --build build`
      (binary at `build/bin/llama-server`)
    - Windows: a [llama.cpp release](https://github.com/ggml-org/llama.cpp/releases)
-     build with `llama-server.exe` on your `PATH`
-   - Custom location: point the `LLAMA_SERVER_PATH` environment variable at the binary
+     build with `llama-server.exe` on your `PATH` — the `bin-win-vulkan-x64.zip`
+     build works on every GPU vendor (NVIDIA RTX included); the CUDA build
+     (`bin-win-cuda-x64.zip`, needs CUDA 12.8+ runtime) is the faster choice on
+     recent NVIDIA GPUs. Note that Windows Defender/SmartScreen may warn about
+     the unsigned executable on first run.
+   - Custom location: point the `LLAMA_SERVER_PATH` environment variable at the binary,
+     or set **Settings → Tools → Vulcan Sweep → llama-server path**
 
    **Tip:** for the fastest suggestions use a current llama.cpp build. n-gram
    speculative decoding (roughly a third faster) is enabled automatically
@@ -75,14 +80,17 @@ No Python, no `uv`, nothing else to install. First start takes a few minutes
 
 Prompts are built in-process by the plugin; inference runs on `llama-server`,
 which the plugin starts in the visible PhpStorm/IntelliJ terminal (never as a
-hidden background process) with n-gram speculative decoding enabled. The plugin
-checks the server health periodically and skips autocomplete requests while the
-server is unavailable.
+hidden background process) with n-gram speculative decoding, flash attention,
+a single decoding slot (so consecutive prompts reuse the KV cache), and
+`--cache-reuse` enabled. The plugin checks the server health periodically and
+skips autocomplete requests while the server is unavailable. Useful launch
+parameters (binary path, extra arguments, flash attention mode, context size)
+are configurable in **Settings → Tools → Vulcan Sweep**.
 
-To test manually, start llama-server with a Sweep model:
+To start the server manually with the same flags the plugin uses:
 
 ```bash
-llama-server -m sweep-next-edit-0.5b.q8_0.gguf --port 8081 -ngl -1 --flash-attn auto
+llama-server -m sweep-next-edit-1.5b.q8_0.v2.gguf --port 8081 -ngl 999 -fa on --parallel 1 --cache-reuse 256 --spec-type ngram-mod
 ```
 
 ### Troubleshooting

@@ -129,4 +129,66 @@ class LlamaServerClientTest {
         assertFinishes(older, "older")
         assertEquals("cancelled", outcomes["older"])
     }
+    private fun silentServer(beforeHeaders: Boolean): java.util.concurrent.CountDownLatch {
+        val arrived = java.util.concurrent.CountDownLatch(1)
+        server.removeContext("/v1/completions")
+        server.createContext("/v1/completions") { exchange ->
+            arrived.countDown()
+            try {
+                if (beforeHeaders) Thread.sleep(2000)
+                exchange.sendResponseHeaders(200, 0)
+                if (!beforeHeaders) { exchange.responseBody.flush(); Thread.sleep(2000) }
+            } catch (_: Exception) {
+            } finally { exchange.close() }
+        }
+        return arrived
+    }
+
+    @Test
+    fun `silent stream times out and discards partial output`() {
+        silentServer(false)
+        val start = System.nanoTime()
+        org.junit.jupiter.api.Assertions.assertThrows(LlamaServerClient.RequestTimeoutException::class.java) {
+            client.generateCompletion("silent", remainingMs = 150)
+        }
+        assertTrue((System.nanoTime() - start) / 1_000_000 < 1500)
+    }
+
+    @Test
+    fun `cancellation before headers releases caller`() {
+        val arrived = silentServer(true)
+        val pending = streamInBackground("headers", 10000)
+        pending.start()
+        assertTrue(arrived.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        client.cancelInFlightRequests()
+        pending.join(1000)
+        assertFalse(pending.isAlive)
+        assertEquals("cancelled", outcomes["headers"])
+    }
+
+    @Test
+    fun `cancellation closes a silent response stream`() {
+        val arrived = silentServer(false)
+        val pending = streamInBackground("silent", 10000)
+        pending.start()
+        assertTrue(arrived.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        Thread.sleep(100)
+        client.cancelInFlightRequests()
+        pending.join(1000)
+        assertFalse(pending.isAlive)
+        assertEquals("cancelled", outcomes["silent"])
+    }
+
+    @Test
+    fun `http errors are inference errors rather than valid empty results`() {
+        server.removeContext("/v1/completions")
+        server.createContext("/v1/completions") { exchange ->
+            exchange.sendResponseHeaders(503, 0)
+            exchange.close()
+        }
+        org.junit.jupiter.api.Assertions.assertThrows(IOException::class.java) {
+            client.generateCompletion("error")
+        }
+    }
+
 }

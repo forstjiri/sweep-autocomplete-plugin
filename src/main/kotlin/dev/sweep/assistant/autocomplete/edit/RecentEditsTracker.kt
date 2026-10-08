@@ -185,6 +185,9 @@ class RecentEditsTracker(
         /** Set when duplicate-risk was detected: all methods of the enclosing class. */
         val duplicateRiskMethodNames: List<String> = emptyList(),
         val requestTime: Long = System.currentTimeMillis(),
+        val startedNanos: Long = System.nanoTime(),
+        val deadlineNanos: Long = 0,
+        val retrievalDeadlineNanos: Long = 0,
     )
 
     private var currentJob: Job? = null
@@ -252,6 +255,7 @@ class RecentEditsTracker(
     private val recentEditsHighRes = EvictingQueue<EditRecord>(MAX_HIGH_RES_EDITS_TRACKED)
     private val recentCursorPositions = EvictingQueue<CursorPositionRecord>(MAX_CURSOR_POSITIONS_TRACKED)
     private val recentUserActions = EvictingQueue<UserAction>(MAX_RECENT_USER_ACTIONS)
+    @Volatile private var debounceScheduledNanos: Long = 0
     private val debouncer =
         Debouncer({ SweepSettings.getInstance().getDebounceThresholdMs() }, scope, project) { processLatestEdit() }
     private var lastDocumentText: String? = null
@@ -322,10 +326,11 @@ class RecentEditsTracker(
     private var lastNumUsagesRetrieved: Int = 0
 
     /**
-     * Schedules the debouncer and triggers definition chunk prefetch if caching is enabled.
+     * Schedules the debouncer. Context is collected when the debounced request starts; no prefetch is performed.
      * This should be called instead of debouncer.schedule() directly.
      */
     fun scheduleAutocompleteWithPrefetch() {
+        debounceScheduledNanos = System.nanoTime()
         debouncer.schedule()
     }
 
@@ -1182,6 +1187,7 @@ class RecentEditsTracker(
                     }
 
                     acceptanceDisposable?.dispose()
+                    val caretBefore = editor.caretModel.offset
                     acceptanceDisposable =
                         it.accept(editor).also { disposable ->
                             if (it is AutocompleteSuggestion.GhostTextSuggestion ||
@@ -1191,6 +1197,7 @@ class RecentEditsTracker(
                                 metadata.autocompleteAcceptCount++
                             }
                         }
+                    logger.info("NES accept id=${it.autocomplete_id} type=${it.type} caretBefore=$caretBefore caretAfter=${editor.caretModel.offset}")
                     // The accepted edit is now part of the current document baseline.
                     originalDocumentText = document.text
 //                    if (suggestionQueue.isEmpty()) {
@@ -1687,14 +1694,21 @@ class RecentEditsTracker(
 //                        if (!it.isInLocalFileSystem) return@launch
                 } ?: return@launch
 
+                val requestId = UUID.randomUUID().toString()
+                val startedNanos = System.nanoTime()
+                val policy = dev.sweep.assistant.autocomplete.edit.engine.NesRequestPolicy.forRequest(steering, emptyList())
+                val overallDeadline = dev.sweep.assistant.autocomplete.edit.engine.NesDeadline.after(policy.deadlineMs)
+                val retrievalDeadline = dev.sweep.assistant.autocomplete.edit.engine.NesDeadline.after(policy.retrievalMs)
+                logger.info("NES begin id=$requestId manual=${steering != null} debounceMs=${if (steering == null && debounceScheduledNanos != 0L) (startedNanos - debounceScheduledNanos) / 1_000_000 else 0}")
                 // Duplicate-method detection: when the caret sits on an unfinished method
                 // name that prefixes an existing method, steer the request toward a new
                 // method and attach the resolved entity class as retrieval context.
                 var autoSteering: String? = null
                 var autoEntityChunks: List<FileChunk> = emptyList()
                 var duplicateRiskMethodNames: List<String> = emptyList()
+                val collectionContext = currentCoroutineContext()
                 if (steering == null) {
-                    runCatching { newMethodContextService.detect(editorState) }.getOrNull()?.let { context ->
+                    runCatching { newMethodContextService.detect(editorState, retrievalDeadline) { !collectionContext.isActive } }.getOrNull()?.let { context ->
                         autoSteering = newMethodContextService.buildSteering(context)
                         autoEntityChunks = listOfNotNull(context.entityChunk)
                         duplicateRiskMethodNames = context.allMethodNames
@@ -1708,6 +1722,10 @@ class RecentEditsTracker(
 
                 val requestEntry =
                     AutocompleteRequestEntry(
+                        id = requestId,
+                        startedNanos = startedNanos,
+                        deadlineNanos = overallDeadline.expiresAtNanos,
+                        retrievalDeadlineNanos = retrievalDeadline.expiresAtNanos,
                         editorState = editorState,
                         steering = steering,
                         avoidCompletions = if (steering != null) shownSteeredCompletions.toList() else emptyList(),
@@ -1752,9 +1770,12 @@ class RecentEditsTracker(
                      autoSteering = requestEntry.autoSteering,
                      extraRetrievalChunks = requestEntry.extraRetrievalChunks,
                      shouldAbort = { !requestContext.isActive },
+                     requestId = requestEntry.id,
+                     deadlineNanos = requestEntry.deadlineNanos,
+                     retrievalDeadlineNanos = requestEntry.retrievalDeadlineNanos,
                  )
             logger.info(
-                "Autocomplete response received: request=${requestEntry.requestTime}, " +
+                "NES outcome id=${requestEntry.id} ms=${(System.nanoTime() - requestEntry.startedNanos) / 1_000_000} request=${requestEntry.requestTime}, " +
                     "steering=${requestEntry.steering != null}, " +
                     "completions=${response?.completions?.size ?: 0}, " +
                     "offsets=${response?.completions?.joinToString { "${it.start_index}:${it.end_index}" } ?: "none"}",
@@ -1812,7 +1833,7 @@ class RecentEditsTracker(
                         val steeredStateIsCurrent = isSteeredRequestStateCurrent(request)
                         if (request.requestTime != latestRequestTime && !steeredStateIsCurrent) {
                             logger.info(
-                                "Skipping stale autocomplete response before display: request=${request.requestTime}, " +
+                                "NES discard id=${request.id} reason=stale ms=${(System.nanoTime() - request.startedNanos) / 1_000_000} request=${request.requestTime}, " +
                                     "latest=$latestRequestTime",
                             )
                             continue
@@ -1861,7 +1882,7 @@ class RecentEditsTracker(
                                 !(request.steering != null && isSteeredRequestStateCurrent(request))
                             ) {
                                 logger.info(
-                                    "Skipping stale autocomplete response: request=${request.requestTime}, " +
+                                    "NES discard id=${request.id} reason=stale ms=${(System.nanoTime() - request.startedNanos) / 1_000_000} request=${request.requestTime}, " +
                                         "latest=$latestRequestTime",
                                 )
                                 return@invokeLater
@@ -1902,7 +1923,7 @@ class RecentEditsTracker(
                                     firstResponse
                                 }
                                 if (request.steering != null && responseToShow == null) {
-                                    logger.info(
+                                    logger.debug(
                                         "Skipping duplicate steered autocomplete response: " +
                                             "request=${request.requestTime}, completion=${firstResponse.completion.replace("\n", "\\n").take(300)}",
                                     )
@@ -1936,6 +1957,7 @@ class RecentEditsTracker(
                                     if (request.steering != null) {
                                         lastSteeredCompletion = responseToShow.completion
                                     }
+                                    logger.info("NES display id=${request.id} ms=${(System.nanoTime() - request.startedNanos) / 1_000_000}")
                                     showAutocomplete(
                                         responseToShow,
                                         request.editorState,
@@ -2091,7 +2113,7 @@ class RecentEditsTracker(
     private fun getOtherOpenedFileChunks(): List<FileChunk> {
         val openedFiles = FileEditorManager.getInstance(project).selectedFiles
         val currentEditorPath = getCurrentEditor()?.virtualFile?.path?.let { relativePath(project, it) ?: it }
-        return openedFiles.mapNotNull { virtualFile ->
+        return openedFiles.asSequence().mapNotNull { virtualFile ->
             val virtualFileRelativePath = relativePath(project, virtualFile.path) ?: virtualFile.path
             if (virtualFileRelativePath == currentEditorPath) return@mapNotNull null
 
@@ -2107,7 +2129,7 @@ class RecentEditsTracker(
             } else {
                 // Fallback: create chunk for entire file
                 val relativePath = virtualFileRelativePath
-                val fileContent = readFile(project, relativePath) ?: return@mapNotNull null
+                val fileContent = readFile(project, relativePath)?.take(3584) ?: return@mapNotNull null
                 val lines = fileContent.lines()
 
                 FileChunk(
@@ -2118,7 +2140,7 @@ class RecentEditsTracker(
                     timestamp = System.currentTimeMillis(),
                 )
             }
-        }
+        }.filter { it.content.isNotBlank() }.take(1).toList()
     }
 
     private suspend fun fetchNextEditAutocomplete(
@@ -2130,6 +2152,9 @@ class RecentEditsTracker(
         autoSteering: String? = null,
         extraRetrievalChunks: List<FileChunk> = emptyList(),
         shouldAbort: () -> Boolean = { false },
+        requestId: String = UUID.randomUUID().toString(),
+        deadlineNanos: Long = 0,
+        retrievalDeadlineNanos: Long = 0,
     ): NextEditAutocompleteResponse? {
         try {
             if (shouldAbort()) return null
@@ -2138,71 +2163,56 @@ class RecentEditsTracker(
                 logger.warn("File is too large to fetch next edit autocomplete")
                 return null
             }
-            val fileChunks = getRelevantFileChunks(maxChunks = 1)
-            if (shouldAbort()) return null
-            val allFileChunks =
-                if (fileChunks.isNotEmpty()) {
-                    listOf(fileChunks.last())
-                } else {
-                    getOtherOpenedFileChunks().take(1)
-                }
-            if (shouldAbort()) return null
-            // ClipboardTrackingService removed with chat code; no clipboard chunks are sent.
-            val clipboardChunks: List<FileChunk> = emptyList()
+            val policy = dev.sweep.assistant.autocomplete.edit.engine.NesRequestPolicy.forRequest(steering, avoidCompletions)
+            val collectionStart = System.nanoTime()
+            val deadline = if (deadlineNanos == 0L) dev.sweep.assistant.autocomplete.edit.engine.NesDeadline.after(policy.deadlineMs) else dev.sweep.assistant.autocomplete.edit.engine.NesDeadline.at(deadlineNanos)
+            val retrievalDeadline = if (retrievalDeadlineNanos == 0L) dev.sweep.assistant.autocomplete.edit.engine.NesDeadline.after(policy.retrievalMs) else dev.sweep.assistant.autocomplete.edit.engine.NesDeadline.at(retrievalDeadlineNanos)
+            val cancelled = { shouldAbort() || deadline.expired() }
+            val retrievalCancelled = { cancelled() || retrievalDeadline.expired() }
+            val snapshot = EditorState(fileContents, fileContents.take(caretPosition).count { it == '\n' }, caretPosition, filePath, fileContents.lines().size)
             val relPath = relativePath(project, filePath) ?: filePath
-            var retrievalChunks = emptyList<FileChunk>()
-            getCurrentEditorState()?.let { editorState ->
-                val currentDropDownContents =
-                    runCatching {
-                        entityUsageSearchService.getCurrentDropdownContents()?.takeIf { it.isNotEmpty() }?.let {
-                            listOf(
-                                FileChunk(
-                                    file_path = "dropdown.txt",
-                                    start_line = 1,
-                                    end_line = it.lines().size,
-                                    content = it,
-                                    timestamp = System.currentTimeMillis(),
-                                ),
-                            )
-                        } ?: emptyList()
-                    }.getOrElse { emptyList() }
-                if (shouldAbort()) return null
 
-                val definitionChunks =
-                    runCatching {
-                        entityUsageSearchService.getDefinitionsBeforeCursor(editorState)
-                    }.getOrElse { emptyList() }
-                if (shouldAbort()) return null
-
-                val usageChunks =
-                    runCatching {
-                        entityUsageSearchService.getCurrentLineEntityUsages(editorState)
-                    }.getOrElse { emptyList() }
-                if (shouldAbort()) return null
-
-                // Store retrieval counts for metrics tracking
-                lastNumDefinitionsRetrieved = definitionChunks.size
-                lastNumUsagesRetrieved = usageChunks.size
-
-                retrievalChunks =
-                    (
-                        currentDropDownContents +
-                            clipboardChunks +
-                            usageChunks +
-                            definitionChunks +
-                            extraRetrievalChunks
-                    ).onEach {
-                        it.truncate(MAX_RETRIEVAL_CHUNK_SIZE)
-                    }.filter {
-                        it.file_path != relPath
-                    }.let { snippets ->
-                        fuseAndDedupSnippets(
-                            project,
-                            snippets,
-                        )
-                    }.reversed().take(if (steering != null) MAX_RETRIEVAL_CHUNKS_TO_SEND else 1)
+            fun eligible(chunk: FileChunk): FileChunk? {
+                val path = relativePath(project, chunk.file_path) ?: chunk.file_path
+                if (path == relPath || chunk.content.isBlank()) return null
+                val chars = (policy.retrievalTokens * dev.sweep.assistant.autocomplete.edit.engine.NesConstants.CHARS_PER_TOKEN).toInt()
+                var used = 0
+                val lines = chunk.content.lines().take(MAX_RETRIEVAL_CHUNK_SIZE).takeWhile { line ->
+                    used += line.length + 1
+                    used + path.length + 20 <= chars
+                }
+                val text = lines.joinToString("\n")
+                if (text.isBlank()) return null
+                return chunk.copy(file_path = path, content = text, end_line = chunk.start_line + lines.size - 1)
             }
-            if (shouldAbort()) return null
+            val collector = dev.sweep.assistant.autocomplete.edit.engine.NesContextCollector(
+                policy.retrievalChunks, retrievalDeadline, retrievalCancelled, ::eligible,
+                { chunk: FileChunk -> chunk.file_path to chunk.content },
+            )
+            val retrievalChunks = collector.chunks
+            fun collect(name: String, source: () -> List<FileChunk>) {
+                val start = System.nanoTime()
+                collector.collect { runCatching(source).getOrDefault(emptyList()) }
+                logger.info("NES retrieval id=$requestId source=$name ms=${(System.nanoTime() - start) / 1_000_000} eligible=${retrievalChunks.size}")
+            }
+            collect("dropdown") {
+                entityUsageSearchService.getCurrentDropdownContents(retrievalDeadline, retrievalCancelled)?.let {
+                    listOf(FileChunk("dropdown.txt", 1, it.lines().size, it))
+                } ?: emptyList()
+            }
+            collect("definitions") { entityUsageSearchService.getDefinitionsBeforeCursor(snapshot, retrievalDeadline, retrievalCancelled, 1, (policy.retrievalTokens * 3.5).toInt()) }
+            collect("usages") { entityUsageSearchService.getCurrentLineEntityUsages(snapshot, retrievalDeadline, retrievalCancelled, 1, (policy.retrievalTokens * 3.5).toInt()) }
+            collector.collect { extraRetrievalChunks }
+            if (cancelled()) return null
+            val fileChunks = getRelevantFileChunks(maxChunks = 1)
+            val allFileChunks = (if (fileChunks.isNotEmpty()) fileChunks else getOtherOpenedFileChunks()).take(1).map { chunk ->
+                val maxChars = (policy.otherTokens * dev.sweep.assistant.autocomplete.edit.engine.NesConstants.CHARS_PER_TOKEN).toInt()
+                var used = chunk.file_path.length + 20
+                val lines = chunk.content.lines().takeWhile { used += it.length + 1; used <= maxChars }
+                chunk.copy(content = lines.joinToString("\n"), end_line = chunk.start_line + lines.size - 1)
+            }
+            logger.info("NES collection id=$requestId ms=${(System.nanoTime() - collectionStart) / 1_000_000} retrieval=${retrievalChunks.size}")
+            if (cancelled()) return null
 
             val request =
                 NextEditAutocompleteRequest(
@@ -2235,18 +2245,17 @@ class RecentEditsTracker(
                     steering = steering,
                     automatic_steering = autoSteering,
                     avoid_completions = avoidCompletions.take(10),
+                    request_id = requestId,
+                    deadline_nanos = deadline.expiresAtNanos,
                 )
 
-            val startTime = System.currentTimeMillis()
+            val startTime = System.nanoTime()
 
             val result = NextEditAutocompleteClient.getInstance(project)
-                .fetchNextEditAutocomplete(request, shouldAbort)
+                .fetchNextEditAutocomplete(request, cancelled)
 
-            val wallTime = System.currentTimeMillis() - startTime
-            val serverTime = result?.elapsed_time_ms ?: Long.MAX_VALUE
-            val overhead = wallTime - serverTime
-
-            logger.info("Fetched next edit autocomplete in ${wallTime}ms (server: ${serverTime}ms, overhead: ${overhead}ms)")
+            val wallTime = (System.nanoTime() - startTime) / 1_000_000
+            logger.info("NES inference id=$requestId ms=$wallTime engineMs=${result?.elapsed_time_ms ?: "unavailable"} outcome=${if (result == null) "no_suggestion" else "suggestion"}")
 
             return result
         } catch (e: Exception) {

@@ -998,9 +998,9 @@ class PopupEditorComponent(
             }
         }
 
-        val lastDiffHunkOffset =
-            if (diffHunks.isEmpty()) 0 else diffHunks.last().index + diffHunks.last().deletions.length
-        val lastAdditionEndOffset = (startOffset + lastDiffHunkOffset + offset).coerceAtMost(editor.document.textLength)
+        val lastAdditionEndOffset =
+            caretOffsetAfterAcceptedEdit(startOffset, diffHunks, offset, editor.document.textLength,
+                trimTrailingWhitespace = !isImportFix)
 
         editor.caretModel.moveToOffset(lastAdditionEndOffset)
         editor.selectionModel.setSelection(lastAdditionEndOffset, lastAdditionEndOffset)

@@ -92,6 +92,8 @@ data class NextEditAutocompleteRequest(
     val steering: String? = null,
     val automatic_steering: String? = null,
     val avoid_completions: List<String> = emptyList(),
+    val request_id: String = java.util.UUID.randomUUID().toString(),
+    val deadline_nanos: Long = 0,
 )
 
 @Serializable

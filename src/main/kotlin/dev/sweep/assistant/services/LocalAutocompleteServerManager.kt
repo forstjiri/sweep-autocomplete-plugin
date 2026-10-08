@@ -81,11 +81,12 @@ class LocalAutocompleteServerManager : Disposable {
 
     fun getServerUrl(): String = "http://localhost:${getPort()}"
 
-    fun isServerHealthy(): Boolean {
+    fun isServerHealthy(timeoutMs: Long = HEALTH_CHECK_TIMEOUT_MS): Boolean {
+        if (timeoutMs <= 0) return false
         val healthy = try {
             val request = HttpRequest.newBuilder()
                 .uri(URI.create("${getServerUrl()}/health"))
-                .timeout(Duration.ofMillis(HEALTH_CHECK_TIMEOUT_MS))
+                .timeout(Duration.ofMillis(minOf(HEALTH_CHECK_TIMEOUT_MS, timeoutMs)))
                 .GET()
                 .build()
             healthClient.send(request, HttpResponse.BodyHandlers.discarding()).statusCode() == 200
@@ -265,6 +266,21 @@ class LocalAutocompleteServerManager : Disposable {
                 "-ngl", "999",
             )
         val help = llamaHelpText(llamaServerPath)
+        // Single decoding slot: every request then reuses the same KV cache
+        // instead of rotating across slots, which caused cold ~3k-token
+        // prefills on nearly every keystroke while typing (cache_n=0).
+        if (help.contains("--parallel")) {
+            args += listOf("--parallel", "1")
+        }
+        // Flash attention cuts cold prefill time by roughly a quarter.
+        when {
+            help.contains("--flash-attn") && help.contains("on|off|auto") -> args += listOf("-fa", "on")
+            help.contains("--flash-attn") -> args += listOf("-fa")
+        }
+        // Salvage the shared KV prefix when the prompt tail shifts between keystrokes.
+        if (help.contains("--cache-reuse")) {
+            args += listOf("--cache-reuse", "256")
+        }
         when {
             help.contains("--spec-ngram-mod-n-match") -> {
                 args += listOf("--spec-type", "ngram-mod")

@@ -36,6 +36,103 @@ class LocalAutocompleteServerManager : Disposable {
 
         fun getInstance(): LocalAutocompleteServerManager =
             ApplicationManager.getApplication().getService(LocalAutocompleteServerManager::class.java)
+
+        /**
+         * Performance/compat flags shared by all platforms. Pure function of the
+         * probed `--help` text and settings so it is unit-testable.
+         *
+         * - `-ngl 999` offloads all layers (llama.cpp clamps to the layer count;
+         *   `-ngl -1` is not understood by older builds).
+         * - `--parallel 1` keeps one decoding slot so every request reuses the
+         *   same KV cache instead of rotating across cold slots.
+         * - `-fa <mode>` flash attention (builds without a value argument get the
+         *   boolean form unless the mode is "off").
+         * - `-c <n>` explicit KV context size; 0 omits the flag.
+         * - `--cache-reuse 256` salvages the shared KV prefix when the prompt tail
+         *   shifts between keystrokes.
+         * - n-gram speculative decoding flags depend on the build generation.
+         */
+        fun buildLlamaServerFlags(
+            help: String,
+            flashAttentionMode: String = "on",
+            contextSize: Int = 0,
+        ): List<String> {
+            val args = mutableListOf("-ngl", "999")
+            if (help.contains("--parallel")) {
+                args += listOf("--parallel", "1")
+            }
+            when {
+                help.contains("--flash-attn") && help.contains("on|off|auto") ->
+                    args += listOf("-fa", if (flashAttentionMode in setOf("on", "auto", "off")) flashAttentionMode else "on")
+                help.contains("--flash-attn") && flashAttentionMode != "off" -> args += listOf("-fa")
+            }
+            if (contextSize > 0) {
+                args += listOf("-c", contextSize.toString())
+            }
+            if (help.contains("--cache-reuse")) {
+                args += listOf("--cache-reuse", "256")
+            }
+            when {
+                help.contains("--spec-ngram-mod-n-match") -> {
+                    args += listOf("--spec-type", "ngram-mod")
+                }
+                help.contains("--spec-ngram-size-n") -> {
+                    args += listOf(
+                        "--spec-type", "ngram-mod",
+                        "--spec-ngram-size-n", "24",
+                        "--draft-min", "48",
+                        "--draft-max", "64",
+                    )
+                }
+            }
+            return args
+        }
+
+        /** Renders a bash command that resolves the model file into `$MODEL_PATH`. */
+        fun bashModelResolutionCommand(repoDirName: String, filename: String, sweepCachePath: String): String =
+            "MODEL_PATH=\$(find ~/.cache/huggingface/hub/models--$repoDirName -name '$filename' 2>/dev/null | head -1); " +
+                "[ -z \"\$MODEL_PATH\" ] && MODEL_PATH=\"$sweepCachePath\""
+
+        /** Renders a PowerShell command that resolves the model file into `$MODEL_PATH`. */
+        fun windowsModelResolutionCommand(repoDirName: String, filename: String, sweepCachePath: String): String =
+            "\$MODEL_PATH = Get-ChildItem \"\$env:USERPROFILE\\.cache\\huggingface\\hub\\models--$repoDirName\" -Recurse -Filter '$filename' " +
+                "-ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName; " +
+                "if (-not \$MODEL_PATH) { \$MODEL_PATH = '$sweepCachePath' }"
+
+        /**
+         * PowerShell one-liner that downloads the model GGUF: `hf` CLI when
+         * available, otherwise a plain `curl.exe` into the Sweep models cache.
+         */
+        fun windowsModelDownloadCommand(repo: String, filename: String, destDir: String): String {
+            val hfCliCmd = "hf download $repo $filename"
+            val url = "https://huggingface.co/$repo/resolve/main/$filename"
+            val destFile = "$destDir\\$filename"
+            val curlCmd = "New-Item -ItemType Directory -Force -Path '$destDir' | Out-Null; curl.exe -L -o '$destFile' '$url'"
+            return "if (Get-Command hf -ErrorAction SilentlyContinue) { $hfCliCmd } else { Write-Host 'hf not found, downloading with curl...'; $curlCmd }"
+        }
+
+        /** Asset name pattern of the official llama.cpp Vulkan build for this machine. */
+        fun llamaVulkanAssetPattern(isMac: Boolean, isArm: Boolean): String =
+            when {
+                isMac -> if (isArm) "bin-macos-arm64\\.tar\\.gz" else "bin-macos-x64\\.tar\\.gz"
+                isArm -> "bin-ubuntu-vulkan-arm64\\.tar\\.gz"
+                else -> "bin-ubuntu-vulkan-x64\\.tar\\.gz"
+            }
+
+        /**
+         * PowerShell one-liner that installs the official llama.cpp Vulkan build
+         * (Windows x64/arm64 zip) into the plugin-managed directory. Vulkan works
+         * on every GPU vendor, NVIDIA RTX included.
+         */
+        fun windowsLlamaServerDownloadCommand(managedDir: String, isArm: Boolean): String {
+            val pattern = if (isArm) "bin-win-vulkan-arm64\\.zip" else "bin-win-vulkan-x64\\.zip"
+            return "New-Item -ItemType Directory -Force -Path '$managedDir' | Out-Null; " +
+                "\$url = (Invoke-RestMethod 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10').assets.browser_download_url " +
+                "| Where-Object { \$_ -match '$pattern' } | Select-Object -First 1; " +
+                "if (-not \$url) { Write-Host 'No llama.cpp Windows release asset found'; exit 1 }; " +
+                "curl.exe -sL -o \"\$env:TEMP\\llama-cpp.zip\" \$url; " +
+                "Expand-Archive -Path \"\$env:TEMP\\llama-cpp.zip\" -DestinationPath '$managedDir' -Force"
+        }
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -153,7 +250,15 @@ class LocalAutocompleteServerManager : Disposable {
     private fun resolveLlamaServer(): String? {
         val exeName = llamaServerExeName()
 
-        // Explicit override wins
+        // Settings override wins
+        runCatching { SweepSettings.getInstance().llamaServerPath.trim() }.getOrNull()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let {
+                val f = File(it)
+                if (f.isFile) return f.absolutePath
+            }
+
+        // Explicit env override
         System.getenv("LLAMA_SERVER_PATH")?.trim()?.takeIf { it.isNotEmpty() }?.let {
             val f = File(it)
             if (f.isFile) return f.absolutePath
@@ -232,6 +337,7 @@ class LocalAutocompleteServerManager : Disposable {
      */
     private fun buildModelDownloadCommand(): String {
         val model = getSelectedModel()
+        if (isWindows) return windowsModelDownloadCommand(model.repo, model.filename, SWEEP_MODELS_DIR)
         val hfCliCmd = "hf download ${model.repo} ${model.filename}"
         val url = "https://huggingface.co/${model.repo}/resolve/main/${model.filename}"
         val destDir = SWEEP_MODELS_DIR
@@ -258,47 +364,18 @@ class LocalAutocompleteServerManager : Disposable {
      *     older builds     → not supported, plain flags only
      */
     private fun buildLlamaServerCommand(llamaServerPath: String, modelPath: String, port: Int): List<String> {
-        val args =
-            mutableListOf(
-                llamaServerPath,
-                "-m", modelPath,
-                "--port", port.toString(),
-                "-ngl", "999",
-            )
-        val help = llamaHelpText(llamaServerPath)
-        // Single decoding slot: every request then reuses the same KV cache
-        // instead of rotating across slots, which caused cold ~3k-token
-        // prefills on nearly every keystroke while typing (cache_n=0).
-        if (help.contains("--parallel")) {
-            args += listOf("--parallel", "1")
+        val settings = runCatching { SweepSettings.getInstance() }.getOrNull()
+        val flags = buildLlamaServerFlags(
+            help = llamaHelpText(llamaServerPath),
+            flashAttentionMode = settings?.flashAttentionMode ?: "on",
+            contextSize = settings?.llamaContextSize ?: 0,
+        )
+        // Older builds without n-gram support get a one-time speed hint.
+        if (!flags.contains("--spec-type")) {
+            logger.info("llama-server without n-gram speculative decoding — using plain flags")
+            notifyFasterBuildAvailable(llamaServerPath)
         }
-        // Flash attention cuts cold prefill time by roughly a quarter.
-        when {
-            help.contains("--flash-attn") && help.contains("on|off|auto") -> args += listOf("-fa", "on")
-            help.contains("--flash-attn") -> args += listOf("-fa")
-        }
-        // Salvage the shared KV prefix when the prompt tail shifts between keystrokes.
-        if (help.contains("--cache-reuse")) {
-            args += listOf("--cache-reuse", "256")
-        }
-        when {
-            help.contains("--spec-ngram-mod-n-match") -> {
-                args += listOf("--spec-type", "ngram-mod")
-            }
-            help.contains("--spec-ngram-size-n") -> {
-                args += listOf(
-                    "--spec-type", "ngram-mod",
-                    "--spec-ngram-size-n", "24",
-                    "--draft-min", "48",
-                    "--draft-max", "64",
-                )
-            }
-            else -> {
-                logger.info("llama-server without n-gram speculative decoding — using plain flags")
-                notifyFasterBuildAvailable(llamaServerPath)
-            }
-        }
-        return args
+        return mutableListOf(llamaServerPath, "-m", modelPath, "--port", port.toString()).also { it += flags }
     }
 
     @Volatile
@@ -337,11 +414,14 @@ class LocalAutocompleteServerManager : Disposable {
         llamaPath: String,
         port: Int,
     ): String {
+        val extraArgs = runCatching { SweepSettings.getInstance().extraLlamaServerArgs.trim() }.getOrNull().orEmpty()
+        fun render(args: List<String>): String =
+            args.joinToString(" ") { if (it.contains(" ")) "\"$it\"" else it } +
+                if (extraArgs.isEmpty()) "" else " $extraArgs"
+
         val modelPath = resolveModelPath()
         if (modelPath != null) {
-            return buildLlamaServerCommand(llamaPath, modelPath, port).joinToString(" ") { arg ->
-                if (arg.contains(" ")) "\"$arg\"" else arg
-            }
+            return render(buildLlamaServerCommand(llamaPath, modelPath, port))
         }
 
         // Model not downloaded yet — return a command that downloads first, then starts
@@ -349,14 +429,17 @@ class LocalAutocompleteServerManager : Disposable {
         val downloadCmd = buildModelDownloadCommand()
         val repoDirName = model.repo.replace("/", "--")
         val sweepCachePath = "$SWEEP_MODELS_DIR/${model.filename}"
-        val serverCmd = buildLlamaServerCommand(llamaPath, "\$MODEL_PATH", port)
-            .joinToString(" ") { if (it.contains(" ")) "\"$it\"" else it }
+        val serverCmd = render(buildLlamaServerCommand(llamaPath, "\$MODEL_PATH", port))
 
-        // After download, find the model in either HF cache or Sweep cache
-        val findModel = "MODEL_PATH=\$(find ~/.cache/huggingface/hub/models--$repoDirName -name '${model.filename}' 2>/dev/null | head -1); " +
-            "[ -z \"\$MODEL_PATH\" ] && MODEL_PATH=\"$sweepCachePath\""
-
-        return "$downloadCmd && $findModel && $serverCmd"
+        return if (isWindows) {
+            // The IDE terminal defaults to PowerShell (5.1 has no `&&` — join with `;`).
+            val findModel = windowsModelResolutionCommand(repoDirName, model.filename, sweepCachePath)
+            "$downloadCmd; if (\$LASTEXITCODE -ne 0) { Write-Host '[Vulcan Sweep] Model download failed.'; exit 1 }; " +
+                "$findModel; $serverCmd"
+        } else {
+            val findModel = bashModelResolutionCommand(repoDirName, model.filename, sweepCachePath)
+            "$downloadCmd && $findModel && $serverCmd"
+        }
     }
 
     private fun addExitStatusNotice(command: String): String =
@@ -389,9 +472,9 @@ class LocalAutocompleteServerManager : Disposable {
                         .getNotificationGroup("Vulcan Sweep")
                         .createNotification(
                             "Vulcan Sweep",
-                            "llama-server was not found on PATH. Install llama.cpp — use the commands below " +
-                                "(the official <code>bin-ubuntu-*</code> builds run on any glibc Linux distribution, " +
-                                "Fedora included). Afterwards start the server from the Vulcan Sweep status bar menu.",
+                            "llama-server was not found. Install llama.cpp — use the command below " +
+                                "(downloads the official Vulkan build into <code>~/.cache/sweep/llama.cpp</code>). " +
+                                "Afterwards start the server from the Vulcan Sweep status bar menu.",
                             NotificationType.ERROR,
                         )
                 notification.addAction(
@@ -401,16 +484,14 @@ class LocalAutocompleteServerManager : Disposable {
                             .setContents(StringSelection("brew install llama.cpp"))
                     },
                 )
-                if (!isWindows) {
-                    tarballDownloadCommand()?.let { cmd ->
-                        notification.addAction(
-                            NotificationAction.createSimpleExpiring("Copy download command") {
-                                CopyPasteManager
-                                    .getInstance()
-                                    .setContents(StringSelection(cmd))
-                            },
-                        )
-                    }
+                tarballDownloadCommand()?.let { cmd ->
+                    notification.addAction(
+                        NotificationAction.createSimpleExpiring("Copy download command") {
+                            CopyPasteManager
+                                .getInstance()
+                                .setContents(StringSelection(cmd))
+                        },
+                    )
                 }
                 notification.notify(null)
             } catch (e: Exception) {
@@ -441,7 +522,7 @@ class LocalAutocompleteServerManager : Disposable {
                                 "(the plugin prefers <code>~/.cache/sweep/llama.cpp</code>).",
                             NotificationType.INFORMATION,
                         )
-                if (!isWindows) {
+                if (!isMac) {
                     tarballDownloadCommand()?.let { cmd ->
                         notification.addAction(
                             NotificationAction.createSimpleExpiring("Copy faster build command") {
@@ -461,21 +542,17 @@ class LocalAutocompleteServerManager : Disposable {
 
     /**
      * One-liner that installs the official llama.cpp Vulkan build into the
-     * plugin-managed directory. The <code>bin-ubuntu-*</code> tarballs are
-     * distro-independent and run on any glibc-based Linux distribution; macOS
-     * has its own build. Returns null on platforms without an official build.
+     * plugin-managed directory. Linux gets the distro-independent
+     * <code>bin-ubuntu-vulkan-*</code> tarball, Windows the Vulkan zip via
+     * PowerShell, macOS its own build. Returns null on unsupported platforms.
      */
     private fun tarballDownloadCommand(): String? {
-        val arch = System.getProperty("os.arch").lowercase()
-        val pattern =
-            when {
-                isMac ->
-                    if (arch.contains("aarch64") || arch.contains("arm")) "bin-macos-arm64\\.tar\\.gz"
-                    else "bin-macos-x64\\.tar\\.gz"
-                arch.contains("aarch64") || arch.contains("arm") -> "bin-ubuntu-vulkan-arm64\\.tar\\.gz"
-                else -> "bin-ubuntu-vulkan-x64\\.tar\\.gz"
-            }
         val dir = llamaCppManagedDir().absolutePath
+        if (isWindows) {
+            val isArm = System.getProperty("os.arch").lowercase().let { it.contains("aarch64") || it.contains("arm") }
+            return windowsLlamaServerDownloadCommand(dir, isArm)
+        }
+        val pattern = llamaVulkanAssetPattern(isMac, System.getProperty("os.arch").lowercase().let { it.contains("aarch64") || it.contains("arm") })
         return "mkdir -p '$dir'\n" +
             "curl -sL \"\$(curl -s 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10' " +
             "| grep -oE 'https://[^\"]+$pattern' | head -1)\" | tar -xz -C '$dir'\n"

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.32.14
+
+### Added
+- Automatic Windows setup for llama.cpp: downloads and extracts the official Vulkan build, downloads the selected model, resolves its cache path, and starts the server in PowerShell.
+- Settings for the llama-server executable path, extra launch arguments, flash-attention mode, and context size.
+- Windows and server-tuning setup documentation.
+
 ## 1.32.13
 
 ### Changed

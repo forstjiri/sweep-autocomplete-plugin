@@ -8,7 +8,6 @@ import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.AUTOCOMPLETE_TR
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.CHARS_PER_TOKEN
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.CHUNK_SIZE
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.CHUNK_STRIDE
-import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.LIMIT_TO_CHUNK
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.NUM_LINES_BEFORE
 import java.util.regex.Pattern
 import kotlin.math.abs
@@ -40,13 +39,13 @@ object NesUtils {
 
     /**
      * Return a chunk of the file centered around the cursor position.
-     * For files <= LIMIT_TO_CHUNK lines, returns the full file.
+     * Returns the full file when it fits the estimated automatic input allowance.
      * Ported from Python get_lines_around_cursor().
      */
     fun getLinesAroundCursor(fileContents: String, cursorPosition: Int): String {
         val lines = fileContents.split("\n")
 
-        if (lines.size <= LIMIT_TO_CHUNK) return fileContents
+        if (fileContents.length <= NesRequestPolicy.AUTOMATIC.inputTokens * CHARS_PER_TOKEN) return fileContents
 
         val cursorLine = getLineNumberFromPosition(fileContents, cursorPosition)
         val idealStart = cursorLine - CHUNK_SIZE / 2

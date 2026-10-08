@@ -426,49 +426,7 @@ fun generateDiffStringFromChanges(
         diffs.add(DiffInfo(changeTypeMessage, afterFileName, unifiedDiff))
     }
 
-    // Calculate character count for each diff and sort by size
-    val diffsWithSize =
-        diffs
-            .map { diffInfo ->
-                val headerLength = "${diffInfo.changeTypeMessage}: ${diffInfo.fileName}\n".length
-                val diffLength = diffInfo.unifiedDiff.sumOf { it.length + 1 }
-                val totalLength = headerLength + diffLength + 2
-                Pair(diffInfo, totalLength)
-            }.sortedByDescending { it.second }
-
-    // Keep only the largest diffs that fit within 500000 characters
-    val maxChars = 500000
-    // max diff size is 250k
-    val maxSingleDiffChars = 250000
-    var currentTotal = 0
-    val trimmedDiffs = mutableListOf<DiffInfo>()
-
-    diffsWithSize.forEach { (diffInfo, size) ->
-        when {
-            // If this is the first diff and it's too large, truncate it
-            trimmedDiffs.isEmpty() && size > maxSingleDiffChars -> {
-                val truncatedDiff = truncateDiff(diffInfo, maxSingleDiffChars)
-                trimmedDiffs.add(truncatedDiff)
-                currentTotal += maxSingleDiffChars
-            }
-            // If adding this diff won't exceed the max chars, add it
-            currentTotal + size <= maxChars -> {
-                trimmedDiffs.add(diffInfo)
-                currentTotal += size
-            }
-            // Otherwise, skip this diff
-            else -> return@forEach
-        }
-    }
-
-    // Now build the diff string
-    trimmedDiffs.forEach { diffInfo ->
-        diffBuilder.append("${diffInfo.changeTypeMessage}: ${diffInfo.fileName}\n")
-        diffBuilder.append(diffInfo.unifiedDiff.joinToString(separator = "\n"))
-        diffBuilder.append("\n\n")
-    }
-
-    return diffBuilder.toString()
+    return renderBoundedDiffs(diffs, diffBuilder)
 }
 
 fun generateDiffStringFromUnversionedFiles(
@@ -535,46 +493,24 @@ fun generateDiffStringFromUnversionedFiles(
         diffs.add(DiffInfo("Added new file (unversioned)", fileName, unifiedDiff))
     }
 
-    // Calculate character count for each diff and sort by size
-    val diffsWithSize =
-        diffs
-            .map { diffInfo ->
-                val headerLength = "${diffInfo.changeTypeMessage}: ${diffInfo.fileName}\n".length
-                val diffLength = diffInfo.unifiedDiff.sumOf { it.length + 1 }
-                val totalLength = headerLength + diffLength + 2
-                Pair(diffInfo, totalLength)
-            }.sortedByDescending { it.second }
+    return renderBoundedDiffs(diffs, diffBuilder)
+}
 
-    // Keep only the largest diffs that fit within 500000 characters
-    val maxChars = 500000
-    val maxSingleDiffChars = 250000
-    var currentTotal = 0
-    val trimmedDiffs = mutableListOf<DiffInfo>()
 
-    diffsWithSize.forEach { (diffInfo, size) ->
-        when {
-            // If this is the first diff and it's too large, truncate it
-            trimmedDiffs.isEmpty() && size > maxSingleDiffChars -> {
-                val truncatedDiff = truncateDiff(diffInfo, maxSingleDiffChars)
-                trimmedDiffs.add(truncatedDiff)
-                currentTotal += maxSingleDiffChars
-            }
-            // If adding this diff won't exceed the max chars, add it
-            currentTotal + size <= maxChars -> {
-                trimmedDiffs.add(diffInfo)
-                currentTotal += size
-            }
-            // Otherwise, skip this diff
-            else -> return@forEach
-        }
+/** Shared size ordering, whole-line truncation and rendering for tracked and unversioned files. */
+internal fun renderBoundedDiffs(diffs: List<DiffInfo>, diffBuilder: StringBuilder = StringBuilder()): String {
+    val bySize = diffs.map { info ->
+        info to ("${info.changeTypeMessage}: ${info.fileName}\n".length + info.unifiedDiff.sumOf { it.length + 1 } + 2)
+    }.sortedByDescending { it.second }
+    var used = 0
+    for ((info, size) in bySize) {
+        // Only the first (largest) diff is truncated; later diffs either fit whole or are skipped.
+        val allowance = if (used == 0 && size > 250_000) 250_000 else size
+        if (used + allowance > 500_000) continue
+        val selected = if (allowance < size) truncateDiff(info, allowance) else info
+        used += allowance
+        diffBuilder.append("${selected.changeTypeMessage}: ${selected.fileName}\n")
+            .append(selected.unifiedDiff.joinToString("\n")).append("\n\n")
     }
-
-    // Now build the diff string
-    trimmedDiffs.forEach { diffInfo ->
-        diffBuilder.append("${diffInfo.changeTypeMessage}: ${diffInfo.fileName}\n")
-        diffBuilder.append(diffInfo.unifiedDiff.joinToString(separator = "\n"))
-        diffBuilder.append("\n\n")
-    }
-
     return diffBuilder.toString()
 }

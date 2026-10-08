@@ -1,6 +1,7 @@
 package dev.sweep.assistant.autocomplete.edit
 
 import com.intellij.openapi.project.Project
+import dev.sweep.assistant.utils.DiffGroup
 import dev.sweep.assistant.utils.getDiff
 import dev.sweep.assistant.utils.readFile
 
@@ -141,4 +142,19 @@ fun isFileTooLarge(
         return true
     }
     return false
+}
+
+internal fun caretOffsetAfterAcceptedEdit(
+    startOffset: Int,
+    diffHunks: List<DiffGroup>,
+    adjustmentOffset: Int,
+    documentLength: Int,
+    trimTrailingWhitespace: Boolean = true,
+): Int {
+    val lastHunk = diffHunks.lastOrNull()
+    val hunkEnd = lastHunk?.let { it.index + it.deletions.length } ?: 0
+    val trailingWhitespace = lastHunk?.additions?.let {
+        if (!trimTrailingWhitespace || it.isBlank()) 0 else it.length - it.trimEnd().length
+    } ?: 0
+    return (startOffset + hunkEnd + adjustmentOffset - trailingWhitespace).coerceIn(0, documentLength)
 }

@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import dev.sweep.assistant.autocomplete.edit.engine.NesDeadline
 
 class EntityUsageSearchService(
     private val project: Project,
@@ -68,6 +69,8 @@ class EntityUsageSearchService(
         psiFile: com.intellij.psi.PsiFile,
         processedElements: MutableSet<String>,
         fileChunks: MutableList<FileChunk>,
+        currentPath: String,
+        maxChars: Int,
     ): Boolean {
         return try {
             val elementAtCursor = psiFile.findElementAt(targetOffset) ?: return false
@@ -100,6 +103,8 @@ class EntityUsageSearchService(
                 relativePath(project, targetFile?.virtualFile?.path ?: "")
                     ?: targetFile?.virtualFile?.path ?: "unknown"
 
+            if (filePath == (relativePath(project, currentPath) ?: currentPath)) return false
+
             // Computing the actual lines here is very slow, so we just use the lines count
 
 //        val targetDocument =
@@ -123,8 +128,9 @@ class EntityUsageSearchService(
                 }
 
             if (definitionText.isEmpty()) return false
-
-            val lines = definitionText.lines()
+            var used = filePath.length + 20
+            val lines = definitionText.lines().take(25).takeWhile { used += it.length + 1; used <= maxChars }
+            if (lines.joinToString("\n").isBlank()) return false
 //        val endLine = startLine + maxOf(0, lines.size - 1)
 
             fileChunks.add(
@@ -132,7 +138,7 @@ class EntityUsageSearchService(
                     file_path = filePath,
                     start_line = 1,
                     end_line = lines.size,
-                    content = definitionText,
+                    content = lines.joinToString("\n"),
                     timestamp = System.currentTimeMillis(),
                 ),
             )
@@ -147,134 +153,29 @@ class EntityUsageSearchService(
      * Gets the definition text of the past n elements before the cursor position.
      * Uses IntelliJ's PSI APIs for maximum compatibility across all languages.
      */
-    fun getDefinitionsBeforeCursor(currentEditorState: EditorState): List<FileChunk> =
+    fun getDefinitionsBeforeCursor(currentEditorState: EditorState, deadline: NesDeadline = NesDeadline.after(MAX_DEFINITION_RESOLUTION_TIMEOUT_MS), shouldAbort: () -> Boolean = { false }, limit: Int = numDefinitionsToFetch, maxChars: Int = 1792): List<FileChunk> =
         runCatching {
             // Cache the feature flag value once at the start to avoid repeated lookups
-            val maxDefinitions = numDefinitionsToFetch
+            val maxDefinitions = limit
 
             val future: Future<List<FileChunk>> =
                 AppExecutorUtil.getAppExecutorService().submit<List<FileChunk>> {
                     ReadAction.computeCancellable<List<FileChunk>, Exception> {
-                        val editor =
-                            FileEditorManager.getInstance(project).selectedTextEditor
-                                ?: return@computeCancellable emptyList()
-                        val document = editor.document
+                        if (deadline.expired() || shouldAbort()) return@computeCancellable emptyList()
+                        val file = com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(currentEditorState.filePath)
+                            ?: return@computeCancellable emptyList()
+                        val document = FileDocumentManager.getInstance().getDocument(file) ?: return@computeCancellable emptyList()
+                        if (document.text != currentEditorState.documentText) return@computeCancellable emptyList()
                         val psiFile =
                             PsiDocumentManager.getInstance(project).getPsiFile(document)
                                 ?: return@computeCancellable emptyList()
 
-                        val documentText = document.charsSequence
-                        var targetOffset = maxOf(0, currentEditorState.cursorOffset - 1)
                         val fileChunks = mutableListOf<FileChunk>()
-                        val processedElements = mutableSetOf<String>() // To avoid duplicates
-
-                        var elementsFound = 0
-                        val cursorOffset = currentEditorState.cursorOffset
-                        val currentLineNumber = document.getLineNumber(cursorOffset)
-                        val currentLineStart = document.getLineStartOffset(currentLineNumber)
-                        val currentLineEnd = document.getLineEndOffset(currentLineNumber)
-
-                        // Phase 1: Walk from cursor to start of line
-                        targetOffset = cursorOffset - 1
-                        while (targetOffset >= currentLineStart && elementsFound < maxDefinitions) {
-                            // Skip whitespace and symbols
-                            while (targetOffset >= currentLineStart) {
-                                val char = documentText[targetOffset]
-                                if (char.isWhitespace() || char in "(){}[]<>,.;:=+-*/%!&|^~?") {
-                                    targetOffset--
-                                } else {
-                                    break
-                                }
-                            }
-
-                            if (targetOffset < currentLineStart) break
-
-                            if (processElementAtOffset(targetOffset, psiFile, processedElements, fileChunks)) {
-                                elementsFound++
-                            }
-
-                            // Skip to the start of the current word to avoid redundant checks
-                            while (targetOffset >= currentLineStart) {
-                                val char = documentText[targetOffset]
-                                if (char.isWhitespace() || char in "(){}[]<>,.;:=+-*/%!&|^~?") {
-                                    break
-                                }
-                                targetOffset--
-                            }
-                        }
-
-                        // Phase 2: Walk from cursor to end of line
-                        targetOffset = cursorOffset
-                        while (targetOffset < currentLineEnd && elementsFound < maxDefinitions) {
-                            // Skip whitespace and symbols
-                            while (targetOffset < currentLineEnd) {
-                                val char = documentText[targetOffset]
-                                if (char.isWhitespace() || char in "(){}[]<>,.;:=+-*/%!&|^~?") {
-                                    targetOffset++
-                                } else {
-                                    break
-                                }
-                            }
-
-                            if (targetOffset >= currentLineEnd) break
-
-                            if (processElementAtOffset(targetOffset, psiFile, processedElements, fileChunks)) {
-                                elementsFound++
-                            }
-
-                            // Skip to the end of the current word to avoid redundant checks
-                            while (targetOffset < currentLineEnd) {
-                                val char = documentText[targetOffset]
-                                if (char.isWhitespace() || char in "(){}[]<>,.;:=+-*/%!&|^~?") {
-                                    break
-                                }
-                                targetOffset++
-                            }
-                        }
-
-                        // Phase 3: Walk upwards line by line (max 6 non-whitespace lines)
-                        var lineNumber = currentLineNumber - 1
-                        var nonWhitespaceLinesProcessed = 0
-                        while (lineNumber >= 0 && nonWhitespaceLinesProcessed < 6 && elementsFound < maxDefinitions) {
-                            val lineStart = document.getLineStartOffset(lineNumber)
-                            val lineEnd = document.getLineEndOffset(lineNumber)
-
-                            var processElementCalled = false // Track if we called processElementAtOffset on this line
-                            targetOffset = lineStart
-                            while (targetOffset < lineEnd && elementsFound < maxDefinitions) {
-                                // Skip whitespace and symbols
-                                while (targetOffset < lineEnd) {
-                                    val char = documentText[targetOffset]
-                                    if (char.isWhitespace() || char in "(){}[]<>,.;:=+-*/%!&|^~?") {
-                                        targetOffset++
-                                    } else {
-                                        break
-                                    }
-                                }
-
-                                if (targetOffset >= lineEnd) break
-
-                                processElementCalled = true
-                                if (processElementAtOffset(targetOffset, psiFile, processedElements, fileChunks)) {
-                                    elementsFound++
-                                }
-
-                                // Skip to the end of the current word to avoid redundant checks
-                                while (targetOffset < lineEnd) {
-                                    val char = documentText[targetOffset]
-                                    if (char.isWhitespace() || char in "(){}[]<>,.;:=+-*/%!&|^~?") {
-                                        break
-                                    }
-                                    targetOffset++
-                                }
-                            }
-
-                            // Only count this line if we called processElementAtOffset at least once
-                            if (processElementCalled) {
-                                nonWhitespaceLinesProcessed++
-                            }
-
-                            lineNumber--
+                        val processedElements = mutableSetOf<String>()
+                        val cancelled = { deadline.expired() || shouldAbort() }
+                        for (offset in definitionOffsetsInPriorityOrder(currentEditorState.documentText, currentEditorState.cursorOffset, cancelled)) {
+                            if (fileChunks.size >= maxDefinitions || cancelled()) break
+                            processElementAtOffset(offset, psiFile, processedElements, fileChunks, currentEditorState.filePath, maxChars)
                         }
 
                         fileChunks
@@ -283,7 +184,7 @@ class EntityUsageSearchService(
 
             // Wait for the result with timeout
             try {
-                future.get(MAX_DEFINITION_RESOLUTION_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                future.get(deadline.remainingMs(), TimeUnit.MILLISECONDS)
             } catch (e: Throwable) {
                 // Timeout or other error - cancel the future and return empty list
                 // Use cancel(false) to avoid interrupting the thread during PSI operations/index updates
@@ -296,52 +197,17 @@ class EntityUsageSearchService(
      * Finds occurrences of text from the current line where the cursor is positioned.
      * This provides additional context for autocomplete by including relevant code references.
      */
-    fun getCurrentLineEntityUsages(currentEditorState: EditorState): List<FileChunk> {
+    fun getCurrentLineEntityUsages(currentEditorState: EditorState, deadline: NesDeadline = NesDeadline.after(MAX_SEARCH_TIMEOUT_MS), shouldAbort: () -> Boolean = { false }, maxResults: Int = numUsagesToFetch, maxChars: Int = 1792): List<FileChunk> {
+        if (deadline.expired() || shouldAbort()) return emptyList()
         val e2eStartTime = System.currentTimeMillis()
         val currentFilePath = relativePath(project, currentEditorState.filePath) ?: currentEditorState.filePath
 
         try {
             val usageChunks = mutableListOf<FileChunk>()
 
-            // Only wrap the file/document access operations in ReadAction
-            val (virtualFile, document) =
-                runCatching {
-                    ReadAction
-                        .computeCancellable<Pair<com.intellij.openapi.vfs.VirtualFile?, com.intellij.openapi.editor.Document?>, Exception> {
-                            val vf = FileEditorManager.getInstance(project).selectedFiles.firstOrNull()
-                            val doc = vf?.let { FileDocumentManager.getInstance().getDocument(it) }
-                            Pair(vf, doc)
-                        }
-                }.getOrDefault(Pair(null, null))
-
-            if (virtualFile == null || document == null) return emptyList()
-
-            // Get the text from the last few lines including the current line
-            val textBeforeCursor =
-                currentEditorState.documentText.substring(
-                    0,
-                    currentEditorState.cursorOffset.coerceAtMost(currentEditorState.documentText.length),
-                )
+            val textBeforeCursor = currentEditorState.documentText.take(currentEditorState.cursorOffset)
             val currentLineNumber = textBeforeCursor.count { it == '\n' }
-
-            if (currentLineNumber >= document.lineCount) return emptyList()
-
-            val startLineNumber = maxOf(0, currentLineNumber - LINES_TO_SEARCH + 1)
-            val endLineNumber = currentLineNumber - 1
-
-            val searchText =
-                buildString {
-                    // Add previous lines first
-                    for (lineNum in startLineNumber..endLineNumber) {
-                        if (lineNum >= document.lineCount) break
-                        appendLineText(document, lineNum)
-                    }
-
-                    // Explicitly add current line at the end
-                    if (currentLineNumber < document.lineCount) {
-                        appendLineText(document, currentLineNumber)
-                    }
-                }
+            val searchText = currentEditorState.documentText.lines().take(currentLineNumber + 1).takeLast(LINES_TO_SEARCH).joinToString(" ")
 
             val lineText =
                 textBeforeCursor
@@ -397,7 +263,7 @@ class EntityUsageSearchService(
 
                                 for (searchTerm in reversedSearchTerms) {
                                     // Check cache first for this term
-                                    if (cancelled.get()) {
+                                    if (cancelled.get() || deadline.expired() || shouldAbort()) {
                                         break
                                     }
 
@@ -419,7 +285,7 @@ class EntityUsageSearchService(
                                             searchTerm,
                                             scope,
                                             { psiFile ->
-                                                if (cancelled.get()) {
+                                                if (cancelled.get() || deadline.expired() || shouldAbort()) {
                                                     return@processAllFilesWithWord false
                                                 }
 
@@ -509,7 +375,7 @@ class EntityUsageSearchService(
                     // Poll for completion or timeout
                     val result =
                         try {
-                            searchFuture.get(MAX_SEARCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                            searchFuture.get(deadline.remainingMs(), TimeUnit.MILLISECONDS)
                         } catch (e: Throwable) {
                             cancelled.set(true)
                             searchFuture.cancel(false)
@@ -540,7 +406,8 @@ class EntityUsageSearchService(
 
             val bannedLinesByFile = mutableMapOf<String, MutableSet<Int>>()
 
-            for (occurrence in sortedOccurrences) {
+            occurrenceLoop@ for (occurrence in sortedOccurrences) {
+                if (deadline.expired() || shouldAbort()) break
                 val fileContent = readFile(project, occurrence.filePath) ?: continue
                 val lines = fileContent.lines()
                 val bannedLines = bannedLinesByFile.getOrPut(occurrence.filePath) { mutableSetOf() }
@@ -555,7 +422,9 @@ class EntityUsageSearchService(
                     for (contextLine in startLine..endLine) {
                         chunkLines.add(lines[contextLine - 1])
                     }
-                    val chunkContent = chunkLines.joinToString("\n")
+                    var used = occurrence.filePath.length + 20
+                    val chunkContent = chunkLines.takeWhile { used += it.length + 1; used <= maxChars }.joinToString("\n")
+                    if (chunkContent.isBlank()) continue
 
                     usageChunks.add(
                         FileChunk(
@@ -566,6 +435,8 @@ class EntityUsageSearchService(
                             timestamp = System.currentTimeMillis(),
                         ),
                     )
+
+                    if (usageChunks.size >= maxResults) break@occurrenceLoop
 
                     // Ban all lines within this context window to prevent overlaps
                     for (contextLine in startLine..endLine) {
@@ -588,7 +459,7 @@ class EntityUsageSearchService(
                 }
 
             // Cache the feature flag value to avoid repeated lookups
-            val maxUsages = numUsagesToFetch
+            val maxUsages = maxResults
             return sortedUsageChunks.take(maxUsages)
         } catch (e: Exception) {
             return emptyList()
@@ -627,9 +498,10 @@ class EntityUsageSearchService(
     /**
      * Gets the current dropdown/completion contents if any are active.
      *
-     * @return DropdownContents containing the available items and current selection, or null if no dropdown is active or cancelled
+     * @return Lookup strings, or null if no dropdown is active or collection is cancelled
      */
-    fun getCurrentDropdownContents(): String? {
+    fun getCurrentDropdownContents(deadline: NesDeadline = NesDeadline.after(MAX_DROPDOWN_TIMEOUT_MS), shouldAbort: () -> Boolean = { false }): String? {
+        if (deadline.expired() || shouldAbort()) return null
         return try {
             val lookupManager = LookupManager.getInstance(project)
             val activeLookup = lookupManager.activeLookup ?: return null
@@ -648,7 +520,7 @@ class EntityUsageSearchService(
                     val maxAttempts = 3
                     val pollDelayMs = 10L
 
-                    while (allItems.isEmpty() && attempts < maxAttempts) {
+                    while (allItems.isEmpty() && attempts < maxAttempts && !deadline.expired() && !shouldAbort()) {
                         Thread.sleep(pollDelayMs)
                         allItems =
                             ReadAction.computeCancellable<List<LookupElement>, Exception> {
@@ -663,47 +535,14 @@ class EntityUsageSearchService(
 
                     // Now process items in a ReadAction
                     ReadAction.computeCancellable<String?, Exception> {
-                        val items = mutableListOf<DropdownItem>()
-                        allItems.take(MAX_DROPDOWN_ITEMS).forEach { item ->
-                            try {
-                                // IMPORTANT: We avoid calling item.renderElement(presentation) because
-                                // it triggers the Kotlin Analysis API to resolve symbols, which can fail
-                                // with KotlinIllegalArgumentExceptionWithAttachments if symbols aren't ready.
-                                // Instead, we just use the basic lookupString which is always available.
-                                items.add(
-                                    DropdownItem(
-                                        lookupString = item.lookupString,
-                                        presentationText = item.lookupString,
-                                        tailText = null,
-                                        typeText = null,
-                                        isSelected = item == lookup.currentItem,
-                                        pattern =
-                                            runCatching {
-                                                lookup.itemPattern(item)
-                                            }.getOrElse { "" },
-                                    ),
-                                )
-                            } catch (e: Throwable) {
-                                // If processing an individual item fails, add it with minimal info
-                                items.add(
-                                    DropdownItem(
-                                        lookupString = item.lookupString,
-                                        presentationText = item.lookupString,
-                                        tailText = null,
-                                        typeText = null,
-                                        isSelected = false,
-                                        pattern = "",
-                                    ),
-                                )
-                            }
-                        }
-
-                        items.joinToString("\n") { it.presentationText }
+                        if (deadline.expired() || shouldAbort()) return@computeCancellable null
+                        // Read lookup strings only: rendering/pattern resolution can invoke language analysis.
+                        allItems.take(MAX_DROPDOWN_ITEMS).joinToString("\n") { it.lookupString }
                     }
                 }
 
             try {
-                future.get(MAX_DROPDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                future.get(deadline.remainingMs(), TimeUnit.MILLISECONDS)
             } catch (e: Throwable) {
                 future.cancel(false)
                 null
@@ -712,30 +551,6 @@ class EntityUsageSearchService(
             null
         }
     }
-
-    /**
-     * Data class representing the contents of a dropdown/completion popup.
-     */
-    data class DropdownContents(
-        val items: List<DropdownItem>,
-        val selectedIndex: Int?,
-        val isCompletion: Boolean,
-        val isFocused: Boolean,
-        val bounds: java.awt.Rectangle,
-        val lookupStart: Int,
-    )
-
-    /**
-     * Data class representing a single item in the dropdown.
-     */
-    data class DropdownItem(
-        val lookupString: String,
-        val presentationText: String,
-        val tailText: String?,
-        val typeText: String?,
-        val isSelected: Boolean,
-        val pattern: String,
-    )
 
     private fun sortByTermComplexity(terms: List<String>): List<String> =
         terms.sortedByDescending { term ->
@@ -767,5 +582,32 @@ class EntityUsageSearchService(
 
         // Check if the text (case-insensitive) is in the keyword list
         return keywords.contains(text.lowercase())
+    }
+}
+
+/** Definition priority: current line backwards, current line forwards, then six preceding code lines. */
+internal fun definitionOffsetsInPriorityOrder(text: String, cursor: Int, cancelled: () -> Boolean = { false }): Sequence<Int> = sequence {
+    require(cursor in 0..text.length)
+    fun separator(char: Char) = char.isWhitespace() || char in "(){}[]<>,.;:=+-*/%!&|^~?"
+    fun walk(start: Int, boundary: Int, step: Int): Sequence<Int> = sequence {
+        var offset = start
+        fun inRange() = if (step < 0) offset >= boundary else offset < boundary
+        while (inRange() && !cancelled()) {
+            if (separator(text[offset])) { offset += step; continue }
+            yield(offset)
+            do { offset += step } while (inRange() && !separator(text[offset]) && !cancelled())
+        }
+    }
+    var lineStart = text.lastIndexOf('\n', cursor - 1) + 1
+    val lineEnd = text.indexOf('\n', cursor).let { if (it < 0) text.length else it }
+    yieldAll(walk(cursor - 1, lineStart, -1))
+    yieldAll(walk(cursor, lineEnd, 1))
+    var codeLines = 0
+    while (lineStart > 0 && codeLines < 6 && !cancelled()) {
+        val previousEnd = lineStart - 1
+        lineStart = text.lastIndexOf('\n', previousEnd - 1) + 1
+        var visited = false
+        for (offset in walk(lineStart, previousEnd, 1)) { visited = true; yield(offset) }
+        if (visited) codeLines++
     }
 }

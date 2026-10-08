@@ -8,6 +8,7 @@ import com.intellij.psi.PsiDocumentManager
 import dev.sweep.assistant.utils.relativePath
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import dev.sweep.assistant.autocomplete.edit.engine.NesDeadline
 
 /**
  * Detects the "typing a new method whose name collides with an existing one" scenario,
@@ -110,14 +111,14 @@ class NewMethodContextService(
      * Returns a context when the caret sits on an incomplete method signature whose
      * typed name is a prefix of an existing method in the same class; null otherwise.
      */
-    fun detect(editorState: EditorState): NewMethodContext? {
+    fun detect(editorState: EditorState, deadline: NesDeadline = NesDeadline.after(MAX_RESOLUTION_TIMEOUT_MS), cancelled: () -> Boolean = { false }): NewMethodContext? {
         val context = detectTextOnly(editorState) ?: return null
 
         val document = editorState.documentText
         val cursor = editorState.cursorOffset.coerceIn(0, document.length)
         val classBody = findDirectlyEnclosingClassBody(document, cursor) ?: return context
         val resolved =
-            runCatching { resolveEntityContext(document, cursor, classBody) }
+            runCatching { resolveEntityContext(document, cursor, classBody, editorState, deadline, cancelled) }
                 .getOrNull() ?: return context
 
         val methods = context.allMethodNames
@@ -315,6 +316,9 @@ class NewMethodContextService(
         document: String,
         cursor: Int,
         classBody: Block,
+        snapshot: EditorState,
+        deadline: NesDeadline,
+        cancelled: () -> Boolean,
     ): Pair<FileChunk, List<String>>? {
         val candidates = extractTypeCandidates(classBody.text)
         if (candidates.isEmpty()) return null
@@ -324,7 +328,7 @@ class NewMethodContextService(
                 .submit<Pair<FileChunk, List<String>>?> {
                     ReadAction.computeCancellable<Pair<FileChunk, List<String>>?, Exception> {
                         try {
-                            resolveCandidates(document, cursor, candidates)
+                            resolveCandidates(document, cursor, candidates, snapshot, deadline, cancelled)
                         } catch (t: Throwable) {
                             logger.debug("New-method entity resolution failed: ${t.message}")
                             null
@@ -332,9 +336,9 @@ class NewMethodContextService(
                     }
                 }
         return try {
-            future.get(MAX_RESOLUTION_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            future.get(deadline.remainingMs(), TimeUnit.MILLISECONDS)
         } catch (_: Exception) {
-            future.cancel(true)
+            future.cancel(false)
             null
         }
     }
@@ -361,13 +365,20 @@ class NewMethodContextService(
         document: String,
         cursor: Int,
         candidates: List<String>,
+        snapshot: EditorState,
+        deadline: NesDeadline,
+        cancelled: () -> Boolean,
     ): Pair<FileChunk, List<String>>? {
-        val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return null
-        val psiFile = PsiDocumentManager.getInstance(project).getPsiFile(editor.document) ?: return null
+        if (deadline.expired() || cancelled()) return null
+        val file = com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(snapshot.filePath) ?: return null
+        val psiDocument = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getDocument(file) ?: return null
+        if (psiDocument.text != snapshot.documentText) return null
+        val psiFile = PsiDocumentManager.getInstance(project).getPsiFile(psiDocument) ?: return null
         val currentPath = psiFile.virtualFile?.path
         val searchable = document.substring(0, minOf(document.length, cursor))
 
         for (name in candidates) {
+            if (deadline.expired() || cancelled()) return null
             val offset = IDENTIFIER_REGEX.findAll(searchable).firstOrNull { it.value == name }?.range?.first ?: continue
             val leaf = psiFile.findElementAt(offset) ?: continue
             val reference = leaf.reference ?: leaf.parent?.reference ?: continue

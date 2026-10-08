@@ -15,11 +15,6 @@ object NesConstants {
     // Token estimation
     const val CHARS_PER_TOKEN = 3.5
 
-    // Prompt truncation limits
-    val MAX_INPUT_TOKENS_COUNT = (8192 * 4) - 256   // ~8K tokens at 3.5 chars/token
-    val CHARACTER_BOUND_TO_CHECK_TOKENIZATION = (8192 * 2) - 256
-    val CHARACTER_BOUND_TO_SKIP_TOKENIZATION = (8192 * 4) * 2
-
     // Retrieval
     const val MAX_RETRIEVAL_CHUNK_SIZE_LINES = 25
     const val MAX_RETRIEVAL_CHUNKS = 3
@@ -62,5 +57,4 @@ updated:
     // Chunk size for getLinesAroundCursor
     const val CHUNK_SIZE = 300
     const val CHUNK_STRIDE = CHUNK_SIZE / 2
-    const val LIMIT_TO_CHUNK = 800
 }

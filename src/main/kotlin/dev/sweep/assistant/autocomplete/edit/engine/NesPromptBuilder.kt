@@ -4,10 +4,6 @@ import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.CHARS_PER_TOKEN
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.NUM_LINES_AFTER
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.NUM_LINES_BEFORE
 import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.AUTOCOMPLETE_OUTPUT_MAX_TOKENS
-import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.CHARACTER_BOUND_TO_CHECK_TOKENIZATION
-import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.CHARACTER_BOUND_TO_SKIP_TOKENIZATION
-import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.MAX_INPUT_TOKENS_COUNT
-import dev.sweep.assistant.autocomplete.edit.engine.NesConstants.MAX_RETRIEVAL_TOKENS_COUNT
 import kotlin.math.max
 import kotlin.math.min
 
@@ -46,6 +42,10 @@ object NesPromptBuilder {
         val relativeCursorPosition: Int,
         val relativeCursorLine: Int,
         val blockStartIndex: Int,
+        val estimatedTokens: Int = 0,
+        val contextSelection: String = "unavailable",
+        val skipReason: String? = null,
+        val sectionEstimates: Map<String, Int> = emptyMap(),
     )
 
     /**
@@ -190,8 +190,7 @@ object NesPromptBuilder {
      * @param fileChunks Additional file chunks for context
      * @param retrievalChunks Retrieval chunks from similar code
      * @param recentChangesHighRes High-resolution recent changes
-     * @param forceGhostText Whether to force ghost text mode
-     * @param useRemoteEndpoint Whether a remote endpoint is being used (affects prefill logic)
+     * @param prefillTyping Preserve unchanged code before the typing cursor in the output prefix
      */
     fun buildPrompt(
         filePath: String,
@@ -205,8 +204,10 @@ object NesPromptBuilder {
         retrievalChunks: List<FileChunkData> = emptyList(),
         recentChangesHighRes: String = "",
         steering: String? = null,
-        forceGhostText: Boolean = false,
-        useRemoteEndpoint: Boolean = false,
+        prefillTyping: Boolean = false,
+        policy: NesRequestPolicy = NesRequestPolicy.AUTOMATIC,
+        shouldAbort: () -> Boolean = { false },
+        structuralOutline: List<NesStructuralOutline.Declaration>? = null,
     ): PromptBuildResult {
         val relativeCursorPosition = cursorPosition - blockStartIndex
         if (blockStartIndex < 0 ||
@@ -236,11 +237,10 @@ object NesPromptBuilder {
         }
 
         // Compute prefill and forced prefix
-        val isAtEof = relativeCursorPosition == cleanedCodeBlock.length
         val prefill: String
         val forcedPrefix: String
 
-        if (forceGhostText && !isAtEof && useRemoteEndpoint) {
+        if (prefillTyping && relativeCursorPosition > 0) {
             val prefillCandidate = cleanedCodeBlock.substring(0, relativeCursorPosition)
             val pretokens = NesUtils.pretokenize(prefillCandidate)
             val regexBasedPrefill = if (pretokens.size > 1) pretokens.dropLast(1).joinToString("") else ""
@@ -251,138 +251,97 @@ object NesPromptBuilder {
             forcedPrefix = ""
         }
 
-        // Pack retrieval chunks
-        val packedRetrievalChunks = NesUtils.packItemsForPrompt(
-            retrievalChunks,
-            { it.toPromptString() },
-            MAX_RETRIEVAL_TOKENS_COUNT,
-            truncateFromEnd = false,
-        )
-        val retrievalResults = packedRetrievalChunks.joinToString("") { "\n${it.toPromptString()}" }
-
-        // Format code block and prev section
         var formattedCodeBlock = codeBlockWithCursor
         var formattedPrevSection = prevSection
         if (formattedCodeBlock.endsWith("\n") && formattedPrevSection.endsWith("\n")) {
             formattedCodeBlock = formattedCodeBlock.removeSuffix("\n")
             formattedPrevSection = formattedPrevSection.removeSuffix("\n")
         }
-
-        val initialFile = NesUtils.getLinesAroundCursor(originalFileContents, cursorPosition)
-
-        var formattedPrompt = NesConstants.PROMPT_TEMPLATE
-            .replace("{file_path}", filePath)
-            .replace("{recent_changes}", onlyChangedLines)
-            .replace("{prev_section}", formattedPrevSection)
-            .replace("{code_block}", formattedCodeBlock)
-            .replace("{retrieval_results}", retrievalResults)
-            .replace("{initial_file}", initialFile)
-            .replace("{start_line}", (relativeCursorLine + 1).toString())
-            .replace("{end_line}", (relativeCursorLine + formattedCodeBlock.lines().size + 1).toString()) +
-            "\n$prefill"
-
-        // Truncation logic
-        val formattedFileChunks = fileChunks.joinToString("") { it.toPromptString() }
-
-        if (formattedPrompt.length + formattedFileChunks.length > CHARACTER_BOUND_TO_CHECK_TOKENIZATION) {
-            formattedPrompt = truncatePrompt(
-                filePath, onlyChangedLines, formattedPrevSection, formattedCodeBlock,
-                retrievalResults, initialFile, prefill, fileChunks,
-                relativeCursorLine,
-            ) ?: return PromptBuildResult(
-                "", cleanedCodeBlock, prefill, forcedPrefix, prevSections,
-                relativeCursorPosition, relativeCursorLine, blockStartIndex,
-            )
-        } else {
-            formattedPrompt = formattedFileChunks + formattedPrompt
+        val header = "<|file_sep|>$filePath\n"
+        val suffix = "\n\n<|file_sep|>original/$filePath:${relativeCursorLine + 1}:${relativeCursorLine + formattedCodeBlock.lines().size + 1}\n$formattedPrevSection" +
+            "\n<|file_sep|>current/$filePath:${relativeCursorLine + 1}:${relativeCursorLine + formattedCodeBlock.lines().size + 1}\n$formattedCodeBlock" +
+            "\n<|file_sep|>updated/$filePath:${relativeCursorLine + 1}:${relativeCursorLine + formattedCodeBlock.lines().size + 1}\n" +
+            (steering?.let { "\n<steering>\n$it\n</steering>" } ?: "") +
+            (if (prefill.isNotEmpty() && steering != null) "\n" else "") + prefill
+        val maxChars = (policy.inputTokens * CHARS_PER_TOKEN).toInt()
+        var remaining = maxChars - header.length - suffix.length
+        var primary = ""
+        var selection = "full"
+        val auxiliary = StringBuilder()
+        val sectionChars = linkedMapOf("mandatory" to header.length + suffix.length)
+        if (remaining >= 0 && !shouldAbort()) {
+            if (originalFileContents.length <= remaining) {
+                primary = originalFileContents
+            } else {
+                selection = "window_outline"
+                val lines = originalFileContents.linesSplitKeepEnds()
+                val cursorLine = NesUtils.getLineNumberFromPosition(originalFileContents, cursorPosition.coerceAtMost(originalFileContents.length))
+                val stride = policy.windowLines / 2
+                val windowStart = ((cursorLine - stride).coerceAtLeast(0) / stride) * stride
+                val windowEnd = (windowStart + policy.windowLines).coerceAtMost(lines.size)
+                val windowOffset = lines.take(windowStart).sumOf { it.length }
+                val windowEndOffset = lines.take(windowEnd).sumOf { it.length }
+                val outlineStart = System.nanoTime()
+                val outline = structuralOutline ?: if (filePath.endsWith(".php", true)) NesStructuralOutline.extract(fileContents, cursorPosition, shouldAbort) else emptyList()
+                sectionChars["outlineExtractionMs"] = ((System.nanoTime() - outlineStart) / 1_000_000).toInt()
+                val selected = StringBuilder()
+                val outlineLimit = min((policy.outlineTokens * CHARS_PER_TOKEN).toInt(), remaining / 2)
+                for (declaration in outline) {
+                    if (declaration.start >= windowOffset && declaration.end <= windowEndOffset) continue
+                    val entry = declaration.text + "\n"
+                    if (selected.length + entry.length + 24 <= outlineLimit) selected.append(entry)
+                }
+                val outlineText = if (selected.isEmpty()) "" else "\n/* Structural outline */\n$selected"
+                sectionChars["outline"] = outlineText.length
+                val available = remaining - outlineText.length
+                // Keep complete lines nearest the cursor when the nominal window is too large.
+                var from = windowStart
+                var to = windowEnd
+                var length = lines.subList(from, to).sumOf { it.length }
+                while (length > available && from < to) {
+                    if (cursorLine - from > to - cursorLine - 1) length -= lines[from++].length
+                    else length -= lines[--to].length
+                }
+                primary = lines.subList(from, to).joinToString("") + outlineText
+            }
+            sectionChars["primary"] = primary.length - (sectionChars["outline"] ?: 0)
+            remaining -= primary.length
+            // Newest changes have priority; preserve whole serialized diff chunks.
+            val diffs = onlyChangedLines.split("<|file_sep|>").filter { it.isNotBlank() }.map { "<|file_sep|>$it" }
+            val selectedDiffs = mutableListOf<String>()
+            for (diff in diffs.asReversed()) {
+                if (diff.length + 1 <= remaining) { selectedDiffs.add(diff); remaining -= diff.length + 1 }
+            }
+            sectionChars["recentChanges"] = selectedDiffs.sumOf { it.length + 1 }
+            selectedDiffs.asReversed().forEach { auxiliary.append("\n").append(it) }
+            val seen = mutableSetOf<Pair<String, String>>()
+            fun pack(name: String, chunks: List<FileChunkData>, tokens: Int, count: Int) {
+                val before = auxiliary.length
+                var allowance = min(remaining, (tokens * CHARS_PER_TOKEN).toInt())
+                var added = 0
+                for (chunk in chunks) {
+                    if (shouldAbort()) break
+                    if (chunk.filePath == filePath || chunk.content.isBlank() || !seen.add(chunk.filePath to chunk.content)) continue
+                    val serialized = "\n" + chunk.toPromptString()
+                    if (serialized.length > allowance) continue
+                    auxiliary.append(serialized)
+                    allowance -= serialized.length
+                    remaining -= serialized.length
+                    if (++added >= count) break
+                }
+                sectionChars[name] = auxiliary.length - before
+            }
+            pack("retrieval", retrievalChunks, policy.retrievalTokens, policy.retrievalChunks)
+            pack("other", fileChunks, policy.otherTokens, 1)
         }
-
-        // Truncate long lines
-        formattedPrompt = NesUtils.truncateLongLines(formattedPrompt)
-
-        // Steering is appended after truncation so the tag can never be lost
-        // to the size-based rebuild above (the Python library dropped it there).
-        // Avoided completions stay out of the prompt entirely — the engine
-        // escapes duplicates via the context/temperature matrix instead.
-        if (steering != null) {
-            formattedPrompt += "\n<steering>\n$steering\n</steering>"
-        }
-
+        val formattedPrompt = if (remaining < 0 || shouldAbort()) "" else header + primary + auxiliary + suffix
         return PromptBuildResult(
             formattedPrompt, cleanedCodeBlock, prefill, forcedPrefix, prevSections,
             relativeCursorPosition, relativeCursorLine, blockStartIndex,
+            kotlin.math.ceil(formattedPrompt.length / CHARS_PER_TOKEN).toInt(), selection,
+            if (remaining < 0) "mandatory_overflow" else if (shouldAbort()) "cancelled_or_timeout" else null,
+            sectionChars.mapValues { (key, value) -> if (key.endsWith("Ms")) value else kotlin.math.ceil(value / CHARS_PER_TOKEN).toInt() },
         )
     }
 
-    private fun truncatePrompt(
-        filePath: String,
-        recentChanges: String,
-        prevSection: String,
-        codeBlock: String,
-        retrievalResults: String,
-        initialFile: String,
-        prefill: String,
-        fileChunks: List<FileChunkData>,
-        relativeCursorLine: Int,
-    ): String? {
-        val minimalPrompt = NesConstants.PROMPT_TEMPLATE
-            .replace("{file_path}", filePath)
-            .replace("{recent_changes}", recentChanges)
-            .replace("{prev_section}", prevSection)
-            .replace("{code_block}", codeBlock)
-            .replace("{retrieval_results}", "")
-            .replace("{initial_file}", initialFile)
-            .replace("{start_line}", (relativeCursorLine + 1).toString())
-            .replace("{end_line}", (relativeCursorLine + codeBlock.lines().size + 1).toString()) +
-            "\n$prefill"
-
-        if (minimalPrompt.length > CHARACTER_BOUND_TO_SKIP_TOKENIZATION) return null
-
-        val minimalTokens = NesUtils.estimateTokenCount(minimalPrompt)
-        val retrievalTokens = NesUtils.estimateTokenCount(retrievalResults)
-        val chunkTokens = fileChunks.map { NesUtils.estimateTokenCount(it.content) }
-
-        // Case 1: everything fits
-        if (minimalTokens + retrievalTokens + chunkTokens.sum() <= MAX_INPUT_TOKENS_COUNT) {
-            val fullPrompt = NesConstants.PROMPT_TEMPLATE
-                .replace("{file_path}", filePath)
-                .replace("{recent_changes}", recentChanges)
-                .replace("{prev_section}", prevSection)
-                .replace("{code_block}", codeBlock)
-                .replace("{retrieval_results}", retrievalResults)
-                .replace("{initial_file}", initialFile)
-                .replace("{start_line}", (relativeCursorLine + 1).toString())
-                .replace("{end_line}", (relativeCursorLine + codeBlock.lines().size + 1).toString()) +
-                "\n$prefill"
-            return fileChunks.joinToString("") { it.toPromptString() } + fullPrompt
-        }
-
-        // Case 2: minimal prompt too long
-        if (minimalTokens > MAX_INPUT_TOKENS_COUNT) return null
-
-        // Case 3: drop all file chunks
-        if (minimalTokens + retrievalTokens > MAX_INPUT_TOKENS_COUNT) return minimalPrompt
-
-        // Case 4: fit as many file chunks as possible
-        val promptWithRetrieval = NesConstants.PROMPT_TEMPLATE
-            .replace("{file_path}", filePath)
-            .replace("{recent_changes}", recentChanges)
-            .replace("{prev_section}", prevSection)
-            .replace("{code_block}", codeBlock)
-            .replace("{retrieval_results}", retrievalResults)
-            .replace("{initial_file}", initialFile)
-            .replace("{start_line}", (relativeCursorLine + 1).toString())
-            .replace("{end_line}", (relativeCursorLine + codeBlock.lines().size + 1).toString()) +
-            "\n$prefill"
-
-        var currentTokenCount = minimalTokens + retrievalTokens
-        val partialChunks = StringBuilder()
-        for ((chunk, tokens) in fileChunks.zip(chunkTokens)) {
-            if (currentTokenCount + tokens >= MAX_INPUT_TOKENS_COUNT) break
-            partialChunks.append(chunk.toPromptString())
-            currentTokenCount += tokens
-        }
-
-        return partialChunks.toString() + promptWithRetrieval
-    }
 }

@@ -38,6 +38,8 @@ class NextEditAutocompleteEngine(
         val steering: String? = null,
         val automaticSteering: String? = null,
         val avoidCompletions: List<String> = emptyList(),
+        val requestId: String = UUID.randomUUID().toString(),
+        val deadlineNanos: Long = 0,
     )
 
     data class UserAction(
@@ -64,7 +66,10 @@ class NextEditAutocompleteEngine(
         request: NesRequest,
         shouldAbort: () -> Boolean = { false },
     ): NesResponse {
-        val autocompleteId = UUID.randomUUID().toString().replace("-", "")
+        val autocompleteId = request.requestId
+        val policy = NesRequestPolicy.forRequest(request.steering, request.avoidCompletions)
+        val deadline = if (request.deadlineNanos == 0L) NesDeadline.after(policy.deadlineMs) else NesDeadline.at(request.deadlineNanos)
+        val aborted = { shouldAbort() || deadline.expired() }
         val fileContents = request.fileContents
         val originalFileContents = request.originalFileContents ?: fileContents
         val cursorPosition = request.cursorPosition
@@ -118,9 +123,7 @@ class NextEditAutocompleteEngine(
         val limitedRetrievalChunks =
             if (steered) retrievalChunks.take(MAX_RETRIEVAL_CHUNKS) else retrievalChunks.take(1)
 
-        // Determine if ghost text should be forced
-        val forceGhostText = request.recentUserActions.isEmpty() ||
-            request.recentUserActions.lastOrNull()?.actionType == "INSERT_CHAR"
+        val typing = !steered && request.recentUserActions.lastOrNull()?.actionType == "INSERT_CHAR"
 
         // Steering matrix: steered requests walk context variants (V1 cursor
         // block, V2/V3 retrieval blocks) at 0.35, then again at 0.8. Context
@@ -128,23 +131,34 @@ class NextEditAutocompleteEngine(
         // typing keeps today's behavior: cursor block, then one retrieval
         // pass, both greedy.
         val rounds = if (steered) NesUtils.steeringMatrixTemperatures() else listOf(0.0f)
-        val candidates =
-            buildPassCandidates(request, recentChanges, block, cursorPosition, limitedRetrievalChunks, steered)
+        val structuralOutline by lazy {
+            if (request.filePath.endsWith(".php", true)) NesStructuralOutline.extract(fileContents, cursorPosition, aborted) else emptyList()
+        }
+        val alternateCandidates by lazy {
+            buildPassCandidates(request, recentChanges, block, cursorPosition, limitedRetrievalChunks, steered).drop(1)
+                .distinctBy { it.blockStartIndex to it.codeBlock }.filter { it.codeBlock != block.codeBlock }
+        }
+        val candidates = sequence {
+            yield(PassCandidate("cursor", block.codeBlock, cursorPosition, block.blockStartIndex, limitedRetrievalChunks))
+            if (!aborted() && (steered || deadline.remainingMs() >= 1000)) {
+                yieldAll(alternateCandidates)
+            }
+        }
 
-        val startTime = System.currentTimeMillis()
+        val startTime = System.nanoTime()
         var lastAvoided: List<AutocompleteResult>? = null
+        var attemptCount = 0
 
-        logger.info(
-            "NES: matrix start id=$autocompleteId steered=$steered rounds=${rounds.size} " +
-                "contexts=${candidates.mapIndexed { index, candidate -> "V${index + 1}:${candidate.contextLabel}@${candidate.blockStartIndex}/${candidate.codeBlock.length}" }}",
-        )
+        logger.info("NES: matrix start id=$autocompleteId manual=$steered retrieval=${limitedRetrievalChunks.size}")
 
         for ((roundIndex, temperature) in rounds.withIndex()) {
             for ((variantIndex, candidate) in candidates.withIndex()) {
-                if (shouldAbort()) {
+                if (aborted() || (!steered && variantIndex > 0 && deadline.remainingMs() < 1000)) {
                     logger.info("NES: steering matrix aborted before variant=V${variantIndex + 1}")
-                    return emptyResponse(autocompleteId, System.currentTimeMillis() - startTime)
+                    return emptyResponse(autocompleteId, (System.nanoTime() - startTime) / 1_000_000)
                 }
+                attemptCount++
+                val attemptStart = System.nanoTime()
                 val outcome =
                     runAutocompletePass(
                         filePath = request.filePath,
@@ -161,26 +175,34 @@ class NextEditAutocompleteEngine(
                         steering = promptSteering,
                         avoidCompletions = request.avoidCompletions,
                         temperature = temperature,
-                        forceGhostText = forceGhostText,
+                        prefillTyping = typing && variantIndex == 0,
+                        minimumEditOffset = if (typing) cursorPosition else null,
+                        structuralOutline = { structuralOutline },
+                        policy = policy,
+                        deadline = deadline,
+                        shouldAbort = aborted,
                     )
                 logger.info(
                     "NES: matrix result id=$autocompleteId variant=V${variantIndex + 1} " +
                         "context=${candidate.contextLabel} round=${roundIndex + 1}/${rounds.size} " +
-                        "temperature=$temperature outcome=${outcome.summary()}",
+                        "temperature=$temperature outcome=${outcome.summary()} attempt=$attemptCount fallback=${!steered && variantIndex > 0} attemptMs=${(System.nanoTime() - attemptStart) / 1_000_000} totalMs=${(System.nanoTime() - startTime) / 1_000_000}",
                 )
                 when (outcome) {
                     is AttemptOutcome.Success ->
                         return NesResponse(
                             outcome.completions,
-                            System.currentTimeMillis() - startTime,
+                            (System.nanoTime() - startTime) / 1_000_000,
                             autocompleteId,
                         )
                     is AttemptOutcome.Avoided -> lastAvoided = outcome.completions
                     is AttemptOutcome.Aborted -> {
                         logger.info("NES: steering matrix aborted during variant=V${variantIndex + 1}")
-                        return emptyResponse(autocompleteId, System.currentTimeMillis() - startTime)
+                        return emptyResponse(autocompleteId, (System.nanoTime() - startTime) / 1_000_000)
                     }
                     else -> {}
+                }
+                if (!steered && !automaticFallbackEligible(outcome)) {
+                    return emptyResponse(autocompleteId, (System.nanoTime() - startTime) / 1_000_000)
                 }
                 if (steered) {
                     logger.info(
@@ -195,9 +217,9 @@ class NextEditAutocompleteEngine(
         // result so client-side dedup and cached-completion cycling can take over.
         lastAvoided?.let {
             logger.info("NES: returning ${it.size} completions (avoided match, matrix exhausted)")
-            return NesResponse(it, System.currentTimeMillis() - startTime, autocompleteId)
+            return NesResponse(it, (System.nanoTime() - startTime) / 1_000_000, autocompleteId)
         }
-        return emptyResponse(autocompleteId, System.currentTimeMillis() - startTime)
+        return emptyResponse(autocompleteId, (System.nanoTime() - startTime) / 1_000_000)
     }
 
     /** One NES inference input: a code block context plus its cursor and chunks. */
@@ -302,10 +324,16 @@ class NextEditAutocompleteEngine(
         steering: String?,
         avoidCompletions: List<String>,
         temperature: Float,
-        forceGhostText: Boolean,
+        prefillTyping: Boolean,
+        minimumEditOffset: Int?,
+        structuralOutline: () -> List<NesStructuralOutline.Declaration>,
+        policy: NesRequestPolicy,
+        deadline: NesDeadline,
+        shouldAbort: () -> Boolean,
     ): AttemptOutcome {
         if (codeBlock.isEmpty()) return AttemptOutcome.Filtered("empty_code_block")
 
+        val promptStart = System.nanoTime()
         val promptResult = NesPromptBuilder.buildPrompt(
             filePath = filePath,
             fileContents = fileContents,
@@ -318,20 +346,23 @@ class NextEditAutocompleteEngine(
             retrievalChunks = retrievalChunks,
             recentChangesHighRes = recentChangesHighRes,
             steering = steering,
-            forceGhostText = forceGhostText,
-            useRemoteEndpoint = false,  // local llama-server
+            prefillTyping = prefillTyping,
+            structuralOutline = if (originalFileContents.length > (policy.inputTokens * NesConstants.CHARS_PER_TOKEN).toInt()) structuralOutline() else null,
+            policy = policy,
+            shouldAbort = shouldAbort,
         )
 
-        if (promptResult.formattedPrompt.isEmpty()) return AttemptOutcome.Filtered("empty_prompt")
+        logger.info("NES prompt-build id=$autocompleteId ms=${(System.nanoTime() - promptStart) / 1_000_000} sections=${promptResult.sectionEstimates} skip=${promptResult.skipReason}")
+        if (promptResult.formattedPrompt.isEmpty()) return AttemptOutcome.Filtered(promptResult.skipReason ?: "empty_prompt")
 
-        logger.info("NES: prompt id=$autocompleteId length=${promptResult.formattedPrompt.length} " +
+        logger.info("NES: prompt id=$autocompleteId estimatedTokens=${promptResult.estimatedTokens} context=${promptResult.contextSelection} skip=${promptResult.skipReason} length=${promptResult.formattedPrompt.length} " +
             "codeBlock length=${promptResult.cleanedCodeBlock.length}, " +
             "relativeCursorPos=${promptResult.relativeCursorPosition}, " +
             "relativeCursorLine=${promptResult.relativeCursorLine}, " +
             "blockStartIndex=${promptResult.blockStartIndex}")
 
         // Allow output up to 2x the code block size (room for insertions) + 20 lines buffer
-        val maxOutputChars = (promptResult.cleanedCodeBlock.length * 2) + (20 * 80)
+        val maxOutputChars = (promptResult.cleanedCodeBlock.length * 2) + (20 * 80) - promptResult.prefill.length
 
         return generateAndProcessAttempt(
             promptResult = promptResult,
@@ -342,13 +373,16 @@ class NextEditAutocompleteEngine(
             maxOutputChars = maxOutputChars,
             temperature = temperature,
             avoidCompletions = avoidCompletions,
+            minimumEditOffset = minimumEditOffset,
+            deadline = deadline,
+            shouldAbort = shouldAbort,
         )
     }
 
     /** Result of a single generation + post-processing attempt. */
     private sealed class AttemptOutcome {
         /** Newer request superseded this one or inference failed — abort the pass. */
-        object Aborted : AttemptOutcome()
+        data class Aborted(val reason: String) : AttemptOutcome()
 
         /** Model produced no text — retryable. */
         data class EmptyText(val reason: String) : AttemptOutcome()
@@ -363,8 +397,11 @@ class NextEditAutocompleteEngine(
         data class Success(val completions: List<AutocompleteResult>) : AttemptOutcome()
     }
 
+    private fun automaticFallbackEligible(outcome: AttemptOutcome) =
+        outcome is AttemptOutcome.EmptyText || outcome is AttemptOutcome.Filtered && outcome.reason in setOf("no_hunks", "unchanged")
+
     private fun AttemptOutcome.summary(): String = when (this) {
-        is AttemptOutcome.Aborted -> "aborted"
+        is AttemptOutcome.Aborted -> "aborted:$reason"
         is AttemptOutcome.EmptyText -> "empty:$reason"
         is AttemptOutcome.Filtered -> "filtered:$reason"
         is AttemptOutcome.Avoided -> "avoided:${completions.size}"
@@ -380,6 +417,9 @@ class NextEditAutocompleteEngine(
         maxOutputChars: Int,
         temperature: Float,
         avoidCompletions: List<String>,
+        minimumEditOffset: Int?,
+        deadline: NesDeadline,
+        shouldAbort: () -> Boolean,
     ): AttemptOutcome {
         val completionResult =
             try {
@@ -387,18 +427,22 @@ class NextEditAutocompleteEngine(
                     prompt = promptResult.formattedPrompt,
                     maxOutputChars = maxOutputChars,
                     temperature = temperature,
+                    remainingMs = deadline.remainingMs(),
                     shouldStop = {
-                        NesCompletionParser.hasCompleteChangedWindow(it, promptResult.cleanedCodeBlock)
+                        NesCompletionParser.hasCompleteChangedWindow(promptResult.prefill + it, promptResult.cleanedCodeBlock)
                     },
                 )
             } catch (e: LlamaServerClient.RequestCancelledException) {
                 logger.info("NES request cancelled")
-                return AttemptOutcome.Aborted
+                return AttemptOutcome.Aborted("cancelled")
+            } catch (e: LlamaServerClient.RequestTimeoutException) {
+                return AttemptOutcome.Aborted("timeout")
             } catch (e: Exception) {
                 logger.warn("NES inference error: ${e.message}")
-                return AttemptOutcome.Aborted
+                return AttemptOutcome.Aborted("inference_error")
             }
 
+        if (shouldAbort()) return AttemptOutcome.Aborted(if (deadline.expired()) "timeout" else "cancelled")
         if (completionResult.text.isEmpty()) {
             logger.warn("NES: empty completion text")
             return AttemptOutcome.EmptyText("no_completion")
@@ -408,11 +452,11 @@ class NextEditAutocompleteEngine(
         var completion = promptResult.prefill + completionResult.text
         logger.info(
             "NES: output id=$autocompleteId chars=${completionResult.text.length} " +
-                "finish=${completionResult.finishReason} prefill=${promptResult.prefill.length} " +
+                "firstTextMs=${completionResult.firstTextMs ?: "unavailable"} serverTiming=${completionResult.serverTiming} serverMetrics=${completionResult.serverMetrics} finish=${completionResult.finishReason} prefill=${promptResult.prefill.length} " +
                 "forcedPrefix=${promptResult.forcedPrefix.length}",
         )
 
-        if (completion.startsWith("<|") || completion.removePrefix(promptResult.forcedPrefix).startsWith("<|")) {
+        if (completionResult.text.removePrefix(promptResult.forcedPrefix).startsWith("<|")) {
             logger.warn("NES: filtered — completion starts with special token")
             return AttemptOutcome.Filtered("special_token")
         }
@@ -437,6 +481,10 @@ class NextEditAutocompleteEngine(
             return AttemptOutcome.Filtered("max_tokens")
         }
 
+        if (completion.trimEnd('\n') == promptResult.cleanedCodeBlock.trimEnd('\n')) {
+            return AttemptOutcome.Filtered("unchanged")
+        }
+
         // Check for pure insertion above cursor
         if (NesCompletionParser.isPureInsertionAboveCursor(
                 promptResult.cleanedCodeBlock, completion, promptResult.relativeCursorPosition
@@ -456,6 +504,7 @@ class NextEditAutocompleteEngine(
         }
 
         // Select best hunks
+        val parseStart = System.nanoTime()
         val selectedCompletions = NesCompletionParser.selectBestHunkFromCompletion(
             completion,
             promptResult.cleanedCodeBlock,
@@ -465,7 +514,7 @@ class NextEditAutocompleteEngine(
             promptResult.blockStartIndex,
         )
 
-        logger.info("NES: selectBestHunk returned ${selectedCompletions.size} completions")
+        logger.info("NES parsing id=$autocompleteId ms=${(System.nanoTime() - parseStart) / 1_000_000} hunks=${selectedCompletions.size}")
 
         if (selectedCompletions.isEmpty()) {
             logger.warn("NES: filtered — no hunks selected from completion")
@@ -481,9 +530,17 @@ class NextEditAutocompleteEngine(
         // containing that expression should replace the expression itself —
         // the small model sometimes swaps the wrong slot instead.
         val completions =
-            NesUtils.canonicalizeVariableIntroduction(selectedCompletions, fileContents, recentChanges)
+            NesUtils.canonicalizeVariableIntroduction(selectedCompletions, fileContents, recentChanges).map { edit ->
+                if (minimumEditOffset != null && edit.startIndex < minimumEditOffset && edit.endIndex >= minimumEditOffset &&
+                    fileContents.substring(edit.startIndex, minimumEditOffset) == edit.completion.take(minimumEditOffset - edit.startIndex)) {
+                    edit.copy(startIndex = minimumEditOffset, completion = edit.completion.drop(minimumEditOffset - edit.startIndex))
+                } else edit
+            }
+        if (minimumEditOffset != null && completions.any { it.startIndex < minimumEditOffset }) {
+            return AttemptOutcome.Filtered("before_typing_cursor")
+        }
         completions.forEachIndexed { i, c ->
-            logger.info("NES:   [$i] start=${c.startIndex} end=${c.endIndex} text='${c.completion.take(60)}'")
+            logger.debug("NES:   [$i] start=${c.startIndex} end=${c.endIndex} text='${c.completion.take(60)}'")
         }
 
         // Check for reverts — but pure insertions at the cursor are ghost
@@ -518,6 +575,7 @@ class NextEditAutocompleteEngine(
             return AttemptOutcome.Avoided(completions)
         }
 
+        if (shouldAbort()) return AttemptOutcome.Aborted(if (deadline.expired()) "timeout" else "cancelled")
         logger.info("NES: returning ${completions.size} completions successfully")
         return AttemptOutcome.Success(completions)
     }

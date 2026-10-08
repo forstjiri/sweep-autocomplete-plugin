@@ -77,7 +77,7 @@ class NesPromptBuilderTest {
         val result = buildPrompt(steering = "Try another location.", fileChunks = listOf(bigChunk))
 
         assertTrue(result.formattedPrompt.isNotEmpty())
-        assertTrue(result.formattedPrompt.length + bigChunk.content.length > NesConstants.CHARACTER_BOUND_TO_CHECK_TOKENIZATION)
+        assertTrue(result.estimatedTokens <= NesRequestPolicy.AUTOMATIC.inputTokens)
         assertTrue(result.formattedPrompt.contains("<steering>"))
         assertTrue(result.formattedPrompt.contains("Try another location."))
     }

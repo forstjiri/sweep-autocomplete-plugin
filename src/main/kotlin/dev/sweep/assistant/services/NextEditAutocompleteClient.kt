@@ -37,7 +37,10 @@ class NextEditAutocompleteClient(
     ): NextEditAutocompleteResponse? {
         if (shouldAbort() || !SweepSettings.getInstance().nextEditPredictionFlagOn) return null
         val serverManager = LocalAutocompleteServerManager.getInstance()
-        val serverHealthy = serverManager.recentServerHealth() ?: serverManager.isServerHealthy()
+        val remainingMs = if (request.deadline_nanos == 0L) 3000L else ((request.deadline_nanos - System.nanoTime()) / 1_000_000).coerceAtLeast(0)
+        if (remainingMs == 0L) return null
+        val serverHealthy = serverManager.recentServerHealth() ?: serverManager.isServerHealthy(remainingMs)
+        if (shouldAbort()) return null
         if (!serverHealthy) {
             logger.info("Local llama-server not healthy on request — starting in terminal")
             serverManager.startServerInTerminal(project)
@@ -82,6 +85,8 @@ class NextEditAutocompleteClient(
             steering = request.steering,
             automaticSteering = request.automatic_steering,
             avoidCompletions = request.avoid_completions,
+            requestId = request.request_id,
+            deadlineNanos = request.deadline_nanos,
         )
 
         val result = engine.fetchNextEdits(nesRequest, shouldAbort)
@@ -111,13 +116,17 @@ class NextEditAutocompleteClient(
     @Volatile
     private var nativeEngine: dev.sweep.assistant.autocomplete.edit.engine.NextEditAutocompleteEngine? = null
 
+    private var nativePort: Int? = null
+
+    @Synchronized
     private fun getOrCreateNativeEngine(): dev.sweep.assistant.autocomplete.edit.engine.NextEditAutocompleteEngine {
-        nativeEngine?.let { return it }
         val port = SweepSettings.getInstance().autocompleteLocalPort
+        nativeEngine?.let { if (nativePort == port) return it else it.cancelInFlightRequests() }
         val client = dev.sweep.assistant.autocomplete.edit.engine.LlamaServerClient(
             baseUrl = "http://localhost:$port",
         )
         val engine = dev.sweep.assistant.autocomplete.edit.engine.NextEditAutocompleteEngine(client)
+        nativePort = port
         nativeEngine = engine
         return engine
     }

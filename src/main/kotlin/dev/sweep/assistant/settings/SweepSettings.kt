@@ -24,6 +24,12 @@ class SweepSettings : PersistentStateComponent<SweepSettings> {
         // Default to true - automatically disable conflicting autocomplete plugins on first run
         private const val DEFAULT_DISABLE_CONFLICTING_PLUGINS = true
 
+        // Flash attention mode for llama-server: "on", "auto", or "off".
+        private const val DEFAULT_FLASH_ATTENTION_MODE = "on"
+
+        // KV context size (-c) passed to llama-server; 0 omits the flag.
+        private const val DEFAULT_LLAMA_CONTEXT_SIZE = 8192
+
         fun getInstance(): SweepSettings = ApplicationManager.getApplication().getService(SweepSettings::class.java)
     }
 
@@ -94,6 +100,38 @@ class SweepSettings : PersistentStateComponent<SweepSettings> {
      * Model id used by the native engine (see NesModelConfig).
      */
     var autocompleteLocalModel: String = NesModelConfig.DEFAULT_MODEL_ID
+
+    /**
+     * Optional explicit path to the llama-server binary. Empty = resolve from the
+     * `LLAMA_SERVER_PATH` environment variable, `PATH`, or the plugin-managed
+     * download directory.
+     */
+    var llamaServerPath: String = ""
+
+    /**
+     * Extra arguments appended verbatim to the llama-server launch command
+     * (e.g. `--threads 8`, `-ngl 20`). Power-user escape hatch.
+     */
+    var extraLlamaServerArgs: String = ""
+
+    /**
+     * Flash attention mode: "on", "auto", or "off". Applied only when the
+     * installed llama-server supports `--flash-attn`.
+     */
+    var flashAttentionMode: String = DEFAULT_FLASH_ATTENTION_MODE
+        set(value) {
+            val normalized = value.lowercase().trim()
+            field = if (normalized in setOf("on", "auto", "off")) normalized else DEFAULT_FLASH_ATTENTION_MODE
+        }
+
+    /**
+     * KV context size passed to llama-server as `-c`. 0 omits the flag and uses
+     * the build default.
+     */
+    var llamaContextSize: Int = DEFAULT_LLAMA_CONTEXT_SIZE
+        set(value) {
+            field = value.coerceIn(0, 131072)
+        }
     /**
      * File-name patterns (globs) excluded from autocomplete suggestions.
      */
